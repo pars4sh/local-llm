@@ -37,7 +37,7 @@ The system has three layers, and each does one job:
 | Qwen Code / OpenCode | Login node | Agentic coding against the gateway |
 
 The UI services live on the laptop for two reasons:
-- The GPU job ends at the partition's wall-time limit.
+- The GPU job ends when its `SLURM_TIME` runs out, and chat history must survive that.
 - Compute nodes may not have internet access at every site.
 
 ## Model roster and GPU budget
@@ -92,7 +92,20 @@ gateway registers it by reading that job's run file. vLLM sleep-mode hot-swappin
 2. Start each vLLM process in roster order, waiting for `/health` before starting the next.
 3. Start the gateway, using a config generated from the roster.
 4. Write the run file.
-5. Shortly before the wall-time limit, submit the follow-up job, then shut down cleanly.
+5. If `LLM_AUTO_RESUBMIT=1`, submit the follow-up job shortly before `SLURM_TIME` runs out,
+   then shut down cleanly.
+
+## Node facts that drive decisions
+
+Measured in a GPU job at the development site. Check them at a new site before reusing the
+choices that depend on them.
+
+| Fact | Consequence |
+|---|---|
+| The driver supports CUDA 13.2 | cu130 wheels for torch and vLLM work |
+| No node-local disk | Weights load from the shared filesystem; `LLM_STAGE_DIR` stays empty by default |
+| `/tmp` is RAM-backed tmpfs | Fine for the per-job `TMPDIR`. Staging weights there would cost host RAM |
+| Shared storage writes ~670 MB/s with a single stream (reads not measured yet) | If reads are similar, ~30 GB of weights load in under a minute; the job logs the real load time |
 
 When the job is down, Open WebUI keeps its history but cannot reach any model. The tunnel
 script reconnects to the new node and port once the next job writes its run file.

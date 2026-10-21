@@ -68,9 +68,13 @@ Swapping a model then only changes the roster, not every client.
 ## D-005: UI and its services run on the laptop; only models run on the cluster
 **Status:** accepted · 2026-10-21
 
-**Why.**
-- GPU jobs end at the wall-time limit, and chat history, search and files must not end with them.
-- Compute nodes may not have internet access, and web search needs it.
+**Why.** GPU jobs end when `SLURM_TIME` runs out, and chat history, search and files must not
+end with them.
+
+*Rationale updated 2026-10-21:* the original entry also cited missing internet on compute nodes.
+A GPU job measured outbound HTTPS working at the development site, so that reason no longer
+holds there. The decision stands on the reason above. Serving jobs still run with
+`HF_HUB_OFFLINE=1`, so a job never downloads or changes weights on its own.
 
 ## D-006: MTP speculative decoding on the main model
 **Status:** to validate · 2026-10-21

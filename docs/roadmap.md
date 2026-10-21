@@ -22,7 +22,7 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - [ ] Turn on MTP. Measure tokens per second with and without it, and record the numbers in D-006.
 - [ ] Add the fast, embed and rerank models. Start them in sequence, with a health wait between each.
 - [ ] LiteLLM gateway: config generated from the roster, a master key and one key per client.
-- [ ] Resubmit automatically before the wall-time limit.
+- [ ] Resubmit automatically before `SLURM_TIME` runs out (opt-in: `LLM_AUTO_RESUBMIT=1`).
 
 **Done when:**
 - one `sbatch` brings up all four models behind one authenticated endpoint
@@ -97,7 +97,7 @@ Ask the user about these; don't guess.
 1. ~~Do GPU compute nodes have outbound internet access?~~ **Answered (measured in a GPU job):**
    yes, outbound HTTPS works at the development site. Downloads still happen on the login node,
    and jobs keep `HF_HUB_OFFLINE=1`, so a job never depends on the Hub. Other sites may differ.
-2. Can GPU jobs run longer than the 8 h limit, through a reservation or another partition? (A question for the admins.)
+2. How long may one person's serving job hold a GPU node under the group's usage norms?
 3. ~~Is there node-local scratch disk on the GPU node, and how large is it?~~ **Answered (measured
    in a GPU job):** no dedicated local disk at the development site. The only fast local storage
    is RAM-backed tmpfs (about half the node's RAM), so staging weights there costs host RAM.

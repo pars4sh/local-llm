@@ -9,7 +9,7 @@ Planned contents:
 
 | File | Purpose |
 |---|---|
-| `serve.sbatch` | Job entry point. Reads `.env`, picks free ports, starts the models and the gateway, writes the run file, resubmits before the wall-time limit |
+| `serve.sbatch` | Job entry point. Reads `.env`, picks free ports, starts the models and the gateway, writes the run file, optionally resubmits before `SLURM_TIME` runs out |
 | `launch.py` | Reads the roster, starts each vLLM process in order with health waits, generates the gateway config |
 | `smoke_test.sh` | Checks a live job: text, image, tool call, thinking on and off, embeddings, rerank |
 | `pyproject.toml` / `uv.lock` | Pinned vLLM environment |

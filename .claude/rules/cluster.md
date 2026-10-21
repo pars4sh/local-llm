@@ -8,9 +8,9 @@ paths:
 # Cluster-side code (SLURM job, vLLM, gateway, downloads)
 
 ## Jobs
-- The GPU partition has a wall-time limit (8 h at the development site; the value is
-  `SLURM_TIME` in `.env`). Design for restarts:
-  - resubmit before the limit
+- A serving job runs for `SLURM_TIME` (set in `.env`, within the partition's limit). Design for
+  restarts:
+  - resubmit before `SLURM_TIME` runs out, but only when `LLM_AUTO_RESUBMIT=1` (off by default)
   - keep nothing on the node that must outlive the job
 - Two jobs must be able to run at once without clashing. Pick free ports at job start, and write
   the node and ports to a run file, `$LLM_RUN_DIR/run/<jobid>.env`. The tunnel script and the
@@ -35,9 +35,9 @@ paths:
 - Each vLLM process binds to `127.0.0.1`. Only the gateway binds to all interfaces, and it requires a key.
 
 ## Models and downloads
-- Compute nodes may have no internet at some sites. So, everywhere:
+- Compute nodes have internet at the development site, but not at every site. Either way:
   - download on the login node, into `$LLM_MODEL_DIR`
-  - run jobs with `HF_HUB_OFFLINE=1`
+  - run serving jobs with `HF_HUB_OFFLINE=1`, so a job never downloads or changes weights on its own
 - Never write weights inside the repo.
 - If `LLM_STAGE_DIR` is set, copy the weights there at job start. This avoids reloading 30+ GB
   from a network filesystem each time the job restarts.
