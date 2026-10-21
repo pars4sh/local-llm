@@ -28,9 +28,29 @@ _http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 @dataclass
+class Endpoint:
+    """An OpenAI-compatible server, with an optional API key."""
+
+    base: str
+    key: str | None = None
+
+    def request(self, path: str, body: dict | None = None) -> urllib.request.Request:
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["Authorization"] = f"Bearer {self.key}"
+        data = json.dumps(body).encode() if body is not None else None
+        return urllib.request.Request(self.base + path, data=data, headers=headers)
+
+    def json(self, path: str, body: dict | None = None, timeout: float = 120):
+        with _http.open(self.request(path, body), timeout=timeout) as r:
+            return json.load(r)
+
+
+@dataclass
 class Reply:
     content: str = ""
     reasoning: str = ""
+    reasoning_field: str | None = None  # which delta field carried the reasoning
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
     prompt_tokens: int = 0
@@ -59,7 +79,7 @@ def read_run_file(path: str) -> dict[str, str]:
     return values
 
 
-def chat(port: int, model: str, payload: dict, timeout: float = 900) -> Reply:
+def chat(ep: Endpoint, model: str, payload: dict, timeout: float = 900) -> Reply:
     """Stream one chat completion and collect content, reasoning, tool calls and timings."""
     body = {
         "model": model,
@@ -67,16 +87,11 @@ def chat(port: int, model: str, payload: dict, timeout: float = 900) -> Reply:
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
     reply = Reply()
     content, reasoning, calls = [], [], {}
     t0 = time.monotonic()
     first = last = None
-    with _http.open(req, timeout=timeout) as r:
+    with _http.open(ep.request("/v1/chat/completions", body), timeout=timeout) as r:
         for raw in r:
             line = raw.decode().strip()
             if not line.startswith("data: ") or line == "data: [DONE]":
@@ -91,11 +106,13 @@ def chat(port: int, model: str, payload: dict, timeout: float = 900) -> Reply:
                 if delta.get("content"):
                     content.append(delta["content"])
                     got = True
-                # vLLM has used both field names for the reasoning parser's output.
-                piece = delta.get("reasoning") or delta.get("reasoning_content")
-                if piece:
-                    reasoning.append(piece)
-                    got = True
+                # vLLM and LiteLLM have used both names for the reasoning parser's output.
+                for name in ("reasoning", "reasoning_content"):
+                    if delta.get(name):
+                        reasoning.append(delta[name])
+                        reply.reasoning_field = name
+                        got = True
+                        break
                 for tc in delta.get("tool_calls") or []:
                     slot = calls.setdefault(
                         tc.get("index", 0), {"name": "", "arguments": ""}
@@ -136,8 +153,11 @@ def png_two_colors(size: int = 64) -> bytes:
     )
 
 
-def long_document(target_words: int, needle: str) -> str:
-    """Plausible filler text with one needle sentence about 60% of the way in."""
+def long_document(target_words: int, needles: dict[float, str]) -> str:
+    """Plausible filler text with needle sentences at the given fractions of the way in.
+
+    About 1.11 tokens per word with the Qwen3.8 tokenizer.
+    """
     rng = random.Random(0)
     words = [
         "the", "of", "system", "data", "model", "results", "analysis", "method", "sample",
@@ -150,8 +170,13 @@ def long_document(target_words: int, needle: str) -> str:
         n = rng.randint(12, 24)
         lines.append(" ".join(rng.choice(words) for _ in range(n)).capitalize() + ".")
         count += n
-    lines.insert(int(len(lines) * 0.6), needle)
+    for where, needle in sorted(needles.items(), reverse=True):
+        lines.insert(int(len(lines) * where), needle)
     return "\n".join(lines)
+
+
+def user(text: str) -> dict:
+    return {"role": "user", "content": text}
 
 
 NO_THINK = {"chat_template_kwargs": {"enable_thinking": False}}
@@ -173,14 +198,14 @@ WEATHER_TOOL = {
 }
 
 
-def check_plain(port, model):
+def check_plain(ep, model):
     r = chat(
-        port, model, {"messages": [user("What is the capital of France? One word.")]}
+        ep, model, {"messages": [user("What is the capital of France? One word.")]}
     )
     return "paris" in r.content.lower(), r, r.content.strip()[:60]
 
 
-def check_image(port, model):
+def check_image(ep, model):
     url = "data:image/png;base64," + base64.b64encode(png_two_colors()).decode()
     msg = {
         "role": "user",
@@ -192,18 +217,18 @@ def check_image(port, model):
             },
         ],
     }
-    r = chat(port, model, {"messages": [msg], "max_tokens": 200, **NO_THINK})
+    r = chat(ep, model, {"messages": [msg], "max_tokens": 200, **NO_THINK})
     text = r.content.lower()
-    return "red" in text and "blue" in text, r, r.content
+    return "red" in text and "blue" in text, r, r.content.strip()[:60]
 
 
-def check_tool(port, model):
+def check_tool(ep, model):
     payload = {
         "messages": [user("What's the weather in Paris right now? Use celsius.")],
         "tools": [WEATHER_TOOL],
         "tool_choice": "auto",
     }
-    r = chat(port, model, payload)
+    r = chat(ep, model, payload)
     if r.finish_reason != "tool_calls" or not r.tool_calls:
         return False, r, f"finish_reason={r.finish_reason} content={r.content[:200]!r}"
     call = r.tool_calls[0]
@@ -220,57 +245,50 @@ def check_tool(port, model):
     return ok, r, f"{call['name']}({json.dumps(args)})"
 
 
-def check_thinking_on(port, model):
+def check_thinking_on(ep, model):
     msgs = [user("What is 17 * 23? Reply with just the number.")]
-    r = chat(port, model, {"messages": msgs, **THINK})
+    r = chat(ep, model, {"messages": msgs, **THINK})
     ok = bool(r.reasoning.strip()) and "391" in r.content
-    return (
-        ok,
-        r,
-        f"reasoning {len(r.reasoning)} chars, answer {r.content.strip()[:40]!r}",
+    detail = (
+        f"reasoning {len(r.reasoning)} chars in '{r.reasoning_field}', "
+        f"answer {r.content.strip()[:40]!r}"
     )
+    return ok, r, detail
 
 
-def check_thinking_off(port, model):
+def check_thinking_off(ep, model):
     msgs = [user("What is 17 * 23? Reply with just the number.")]
-    r = chat(port, model, {"messages": msgs, "max_tokens": 50, **NO_THINK})
+    r = chat(ep, model, {"messages": msgs, "max_tokens": 50, **NO_THINK})
     ok = not r.reasoning.strip() and "391" in r.content and "<think>" not in r.content
-    return (
-        ok,
-        r,
-        f"reasoning {len(r.reasoning)} chars, answer {r.content.strip()[:40]!r}",
-    )
+    detail = f"reasoning {len(r.reasoning)} chars, answer {r.content.strip()[:40]!r}"
+    return ok, r, detail
 
 
-def check_long(port, model):
+def check_long(ep, model):
     doc = long_document(
-        46_000, "Note for the reader: the secret code word is aurora-7342."
+        46_000, {0.6: "Note for the reader: the secret code word is aurora-7342."}
     )
     question = (
         "What is the secret code word mentioned in the document? Reply with it only."
     )
     msgs = [user(f"<document>\n{doc}\n</document>\n\n{question}")]
-    r = chat(port, model, {"messages": msgs, "max_tokens": 50, **NO_THINK})
+    r = chat(ep, model, {"messages": msgs, "max_tokens": 50, **NO_THINK})
     ok = "7342" in r.content and 40_000 <= r.prompt_tokens <= 65_000
     return ok, r, f"prompt {r.prompt_tokens} tokens, answer {r.content.strip()[:40]!r}"
 
 
-def check_decode(port, model):
+def check_decode(ep, model):
     payload = {
         "messages": [user("Write a long story about a lighthouse keeper.")],
         "max_tokens": 512,
         "ignore_eos": True,
         **NO_THINK,
     }
-    r = chat(port, model, payload)
+    r = chat(ep, model, payload)
     return r.completion_tokens == 512, r, f"{r.completion_tokens} tokens"
 
 
-def user(text: str) -> dict:
-    return {"role": "user", "content": text}
-
-
-CHECKS = [
+MAIN_CHECKS = [
     ("plain chat", check_plain),
     ("image question", check_image),
     ("tool call", check_tool),
@@ -301,27 +319,28 @@ def main() -> int:
         print(f"no chat model {model or ''} in {args.run_file} (models: {names})")
         return 1
     port = int(run[f"LLM_MODEL_{key(model)}_PORT"])
+    ep = Endpoint(f"http://127.0.0.1:{port}")
     print(
         f"smoke test: {model} on {run.get('LLM_NODE')}:{port} (job {run.get('LLM_JOB_ID')})"
     )
-
-    with _http.open(f"http://127.0.0.1:{port}/v1/models", timeout=10) as r:
-        served = [m["id"] for m in json.load(r)["data"]]
+    served = [m["id"] for m in ep.json("/v1/models")["data"]]
     print(f"served models: {served}")
 
     failed = 0
-    for label, fn in CHECKS:
+    for label, fn in MAIN_CHECKS:
+        stats = ""
         try:
-            ok, r, detail = fn(port, model)
+            ok, r, detail = fn(ep, model)
             stats = (
-                f"ttft {r.ttft:5.2f}s  prompt {r.prompt_tokens:>6}  out {r.completion_tokens:>5}"
-                f"  decode {r.decode_tps:6.1f} tok/s  prefill {r.prefill_tps:8.0f} tok/s"
+                f"ttft {r.ttft:5.2f}s  prompt {r.prompt_tokens:>6}  "
+                f"out {r.completion_tokens:>5}  decode {r.decode_tps:6.1f} tok/s  "
+                f"prefill {r.prefill_tps:8.0f} tok/s  "
             )
         except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
-            ok, stats, detail = False, "", f"{type(e).__name__}: {e}"
+            ok, detail = False, f"{type(e).__name__}: {e}"
         failed += not ok
-        print(f"[{'PASS' if ok else 'FAIL'}] {label:<18} {stats}  {detail}", flush=True)
-    print(f"{len(CHECKS) - failed}/{len(CHECKS)} checks passed")
+        print(f"[{'PASS' if ok else 'FAIL'}] {label:<18} {stats}{detail}", flush=True)
+    print(f"{len(MAIN_CHECKS) - failed}/{len(MAIN_CHECKS)} checks passed")
     return 1 if failed else 0
 
 

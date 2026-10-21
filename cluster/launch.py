@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roster
 
+REPO = Path(__file__).resolve().parent.parent
 STOP_GRACE_S = 30
 # Startup milestones vLLM logs; reported per model when found.
 MILESTONES = {
@@ -63,6 +64,10 @@ _stop_signal: int | None = None
 _log_file = None
 
 
+class StartupError(Exception):
+    pass
+
+
 def log(msg: str) -> None:
     line = f"[launch {dt.datetime.now():%H:%M:%S}] {msg}"
     print(line, flush=True)
@@ -76,15 +81,15 @@ def _on_signal(signum, _frame) -> None:
     _stop_signal = signum
 
 
-def free_port() -> int:
+def free_port(host: str = "127.0.0.1") -> int:
     with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind((host, 0))
         return s.getsockname()[1]
 
 
-def healthy(port: int) -> bool:
+def healthy(port: int, path: str = "/health") -> bool:
     try:
-        with _http.open(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+        with _http.open(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
             return r.status == 200
     except (urllib.error.URLError, http.client.HTTPException, OSError):
         return False
@@ -128,8 +133,41 @@ def tail(path: Path, lines: int = 40) -> str:
     return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
 
 
+def start(cmd: list[str], log_path: Path, env: dict | None = None) -> subprocess.Popen:
+    """Start one process in its own session, logging to log_path, from the repo root."""
+    with open(log_path, "ab") as out:
+        return subprocess.Popen(
+            cmd,
+            cwd=REPO,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def wait_ready(name: str, proc: subprocess.Popen, port: int, path: str,
+               log_path: Path, timeout: float) -> float:  # fmt: skip
+    """Wait until GET path answers 200; return the seconds it took."""
+    t0 = time.monotonic()
+    while not healthy(port, path):
+        if _stop_signal is not None:
+            raise StartupError(f"signal {_stop_signal} while starting {name}")
+        if proc.poll() is not None:
+            raise StartupError(
+                f"{name} exited with code {proc.returncode}; log tail:\n{tail(log_path)}"
+            )
+        if time.monotonic() - t0 > timeout:
+            raise StartupError(
+                f"{name}: not healthy after {timeout:.0f} s; log tail:\n{tail(log_path)}"
+            )
+        time.sleep(2)
+    return time.monotonic() - t0
+
+
 def stop(procs: dict[str, subprocess.Popen]) -> None:
-    """SIGTERM each model's process group (newest first), then SIGKILL stragglers."""
+    """SIGTERM each process group (newest first), then SIGKILL stragglers."""
     for name, proc in reversed(procs.items()):
         if proc.poll() is None:
             log(f"stopping {name} (pid {proc.pid})")
@@ -204,6 +242,7 @@ def main() -> int:
     )
     log(f"GPU memory before start: {gpu_memory()}")
     procs: dict[str, subprocess.Popen] = {}
+    ports: dict[str, int] = {}
     run = {
         "LLM_JOB_ID": job,
         "LLM_NODE": node,
@@ -212,42 +251,26 @@ def main() -> int:
     }
     job_t0 = time.monotonic()
     try:
-        for m in models:
-            port = free_port()
-            cmd = roster.build_command(m, port, model_dir, vllm=vllm)
-            log_path = log_dir / f"{m.name}.log"
-            log(f"starting {m.name} on 127.0.0.1:{port}: {shlex.join(cmd)}")
-            with open(log_path, "ab") as out:
-                procs[m.name] = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
+        try:
+            for m in models:
+                port = ports[m.name] = free_port()
+                cmd = roster.build_command(m, port, model_dir, vllm=vllm)
+                log_path = log_dir / f"{m.name}.log"
+                log(f"starting {m.name} on 127.0.0.1:{port}: {shlex.join(cmd)}")
+                procs[m.name] = start(cmd, log_path)
+                took = wait_ready(
+                    m.name, procs[m.name], port, "/health", log_path, timeout
                 )
-            t0 = time.monotonic()
-            while not healthy(port):
-                if _stop_signal is not None:
-                    log(f"signal {_stop_signal} during startup")
-                    return 0
-                if procs[m.name].poll() is not None:
-                    log(
-                        f"{m.name} exited with code {procs[m.name].returncode}; log tail:"
-                    )
-                    log("\n" + tail(log_path))
-                    return 1
-                if time.monotonic() - t0 > timeout:
-                    log(f"{m.name}: no /health after {timeout:.0f} s; log tail:")
-                    log("\n" + tail(log_path))
-                    return 1
-                time.sleep(2)
-            log(f"{m.name} ready in {time.monotonic() - t0:.1f} s")
-            for line in milestones(log_path):
-                log(f"  {m.name} {line}")
-            log(f"GPU memory now: {gpu_memory()}")
-            key = env_key(m.name)
-            run[f"LLM_MODEL_{key}_PORT"] = str(port)
-            run[f"LLM_MODEL_{key}_KIND"] = m.kind
+                log(f"{m.name} ready in {took:.1f} s")
+                for line in milestones(log_path):
+                    log(f"  {m.name} {line}")
+                log(f"GPU memory now: {gpu_memory()}")
+                run[f"LLM_MODEL_{env_key(m.name)}_PORT"] = str(port)
+                run[f"LLM_MODEL_{env_key(m.name)}_KIND"] = m.kind
+
+        except StartupError as e:
+            log(str(e))
+            return 0 if _stop_signal is not None else 1
 
         run["LLM_STARTED"] = (
             dt.datetime.now().astimezone().isoformat(timespec="seconds")

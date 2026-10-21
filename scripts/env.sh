@@ -39,6 +39,33 @@ use_pip_cuda_toolkit() {
   export LIBRARY_PATH=$scratch/cuda-lib${LIBRARY_PATH:+:$LIBRARY_PATH}
 }
 
+# setup_job_env ROOT: the environment every GPU job here runs in. Loads .env, checks the vLLM
+# environment (sets VENV), gives the job a private TMPDIR on the node that is removed on exit,
+# keeps the job offline, and points JIT compilers at the pip CUDA toolkit.
+setup_job_env() {
+  local root=$1
+  load_env "$root/.env"
+  VENV=$root/cluster/.venv
+  [[ -x $VENV/bin/python ]] || die "no vLLM environment; run: uv sync --locked --project cluster"
+  [[ -n ${LLM_MODEL_DIR:-} ]] || die "LLM_MODEL_DIR is not set (see .env.example)"
+  export LLM_MODEL_DIR LLM_RUN_DIR=${LLM_RUN_DIR:-$HOME/.local-llm}
+
+  # /tmp is RAM-backed at the development site; keep only small files here.
+  export TMPDIR=/tmp/local-llm-${SLURM_JOB_ID:?not inside a SLURM job}
+  mkdir -p "$TMPDIR"
+  chmod 700 "$TMPDIR"
+  trap 'rm -rf "$TMPDIR"' EXIT
+  trap 'exit 143' TERM INT
+
+  # Jobs never download or change weights; everything comes from LLM_MODEL_DIR.
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
+  if [[ -n ${HF_HOME:-} ]]; then export HF_HOME; fi
+  export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4} MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
+  export PATH=$VENV/bin:$PATH
+  use_pip_cuda_toolkit "$VENV/bin/python" "$TMPDIR" ||
+    echo "warning: no pip CUDA toolkit found; FlashInfer JIT kernels stay disabled" >&2
+}
+
 # roster ARGS...: run cluster/roster.py with any Python >= 3.11 that uv can find.
 roster() {
   uv run --quiet --no-project --python '>=3.11' "$REPO/cluster/roster.py" "$@"
