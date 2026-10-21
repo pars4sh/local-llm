@@ -2,9 +2,11 @@
 #SBATCH --job-name=local-llm
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --signal=USR1@600
 # Serving job: starts the enabled roster models with cluster/launch.py and keeps them up until
 # the job ends. Submit it with cluster/submit.sh, which passes the partition, time, account
-# and output path from .env and runs the job from the repository root.
+# and output path from .env and runs the job from the repository root. SLURM sends SIGUSR1
+# about 10 minutes before the time limit; launch.py resubmits then if LLM_AUTO_RESUBMIT=1.
 set -euo pipefail
 
 REPO=$PWD

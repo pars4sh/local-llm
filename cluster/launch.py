@@ -10,6 +10,8 @@ Runs inside the serving job (cluster/serve.sbatch):
 3. Write the run file $LLM_RUN_DIR/run/<jobid>.env and supervise.
 
 If a process exits, or the job gets SIGTERM/SIGINT, stop everything and remove the run file.
+SLURM sends SIGUSR1 about 10 minutes before the time limit (serve.sbatch); with
+LLM_AUTO_RESUBMIT=1 the job then submits its successor and shuts down.
 
 Environment:
     LLM_MODEL_DIR          weights directory (required)
@@ -17,6 +19,8 @@ Environment:
     GATEWAY_MASTER_KEY     gateway admin key (required unless LLM_GATEWAY=0)
     LLM_GATEWAY_KEYS       client key hashes (default $LLM_RUN_DIR/gateway-keys.json)
     LLM_GATEWAY=0          serve the models without the gateway
+    LLM_AUTO_RESUBMIT=1    submit a successor job on SIGUSR1 (off by default)
+    LLM_AUTO_RESUBMIT_MAX  stop resubmitting after this many successors (default: no limit)
     LLM_STARTUP_TIMEOUT    seconds to wait for one process to become healthy (default 1800)
     SLURM_JOB_ID           set by SLURM
 """
@@ -69,6 +73,7 @@ MILESTONES = {
 # Talk to 127.0.0.1 directly, whatever proxy variables the job inherited.
 _http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _stop_signal: int | None = None
+_resubmit_due = False
 _log_file = None
 
 
@@ -87,6 +92,11 @@ def log(msg: str) -> None:
 def _on_signal(signum, _frame) -> None:
     global _stop_signal
     _stop_signal = signum
+
+
+def _on_usr1(_signum, _frame) -> None:
+    global _resubmit_due
+    _resubmit_due = True
 
 
 def free_port(host: str = "127.0.0.1") -> int:
@@ -253,6 +263,26 @@ def gateway_env(run_dir: Path) -> dict:
     return env
 
 
+def resubmit() -> bool:
+    """Submit the successor job through cluster/submit.sh; return True on success."""
+    count = int(os.environ.get("LLM_RESUBMIT_COUNT") or 0) + 1
+    limit = os.environ.get("LLM_AUTO_RESUBMIT_MAX")
+    if limit and count > int(limit):
+        log(f"auto-resubmit limit reached ({limit}); not submitting a successor")
+        return False
+    cmd = [
+        str(REPO / "cluster" / "submit.sh"),
+        f"--export=ALL,LLM_RESUBMIT_COUNT={count}",
+    ]
+    out = subprocess.run(
+        cmd, check=False, capture_output=True, text=True, timeout=120, cwd=REPO
+    )
+    log(
+        f"resubmit #{count}: {(out.stdout + out.stderr).strip()} (exit {out.returncode})"
+    )
+    return out.returncode == 0
+
+
 def main() -> int:
     global _log_file
     job = os.environ.get("SLURM_JOB_ID") or sys.exit("launch: not inside a SLURM job")
@@ -265,6 +295,7 @@ def main() -> int:
     vllm = str(Path(sys.executable).with_name("vllm"))
     use_gateway = os.environ.get("LLM_GATEWAY", "1") != "0"
     litellm = REPO / "gateway" / ".venv" / "bin" / "litellm"
+    auto_resubmit = os.environ.get("LLM_AUTO_RESUBMIT") == "1"
 
     log_dir = run_dir / "logs" / job
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -274,6 +305,7 @@ def main() -> int:
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _on_signal)
+    signal.signal(signal.SIGUSR1, _on_usr1)
 
     try:
         models = roster.enabled(roster.load())
@@ -301,12 +333,11 @@ def main() -> int:
         log(
             "LLM_STAGE_DIR is set, but weight staging is not implemented yet; loading in place"
         )
-    if os.environ.get("LLM_AUTO_RESUBMIT") == "1":
-        log("LLM_AUTO_RESUBMIT=1, but auto-resubmit is not implemented yet")
 
     log(
         f"job {job} on {node}; models: {', '.join(m.name for m in models)}; "
-        f"gateway: {'on' if use_gateway else 'off'}; logs in {log_dir}"
+        f"gateway: {'on' if use_gateway else 'off'}; auto-resubmit: "
+        f"{'on' if auto_resubmit else 'off'}; logs in {log_dir}"
     )
     log(f"GPU memory before start: {gpu_memory()}")
     procs: dict[str, subprocess.Popen] = {}
@@ -359,6 +390,7 @@ def main() -> int:
         write_run_file(run_file, run)
         log(f"all ready in {time.monotonic() - job_t0:.1f} s; run file {run_file}")
 
+        warned = False
         while _stop_signal is None:
             for name, proc in procs.items():
                 if proc.poll() is not None:
@@ -367,6 +399,16 @@ def main() -> int:
                     )
                     log("\n" + tail(log_dir / f"{name}.log"))
                     return 1
+            if _resubmit_due and auto_resubmit:
+                log("time limit is near; submitting the successor")
+                if resubmit():
+                    log("successor submitted; shutting down to free the node for it")
+                    return 0
+                log("no successor submitted; serving until the time limit")
+                auto_resubmit, warned = False, True
+            if _resubmit_due and not warned:
+                log("time limit is near; auto-resubmit is off (LLM_AUTO_RESUBMIT=1)")
+                warned = True
             time.sleep(5)
         log(f"signal {_stop_signal}; shutting down")
         return 0

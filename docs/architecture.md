@@ -90,12 +90,15 @@ gateway registers it by reading that job's run file. vLLM sleep-mode hot-swappin
 
 ## Job lifecycle
 
-1. If `LLM_STAGE_DIR` is set, copy the weights to node-local disk.
+1. Weights load from `LLM_MODEL_DIR` (staging to `LLM_STAGE_DIR` is not implemented; it wasn't
+   needed, see the node facts below).
 2. Start each vLLM process in roster order, waiting for `/health` before starting the next.
 3. Start the gateway, using a config generated from the roster.
 4. Write the run file.
-5. If `LLM_AUTO_RESUBMIT=1`, submit the follow-up job shortly before `SLURM_TIME` runs out,
-   then shut down cleanly.
+5. SLURM sends SIGUSR1 about 10 minutes before `SLURM_TIME` runs out. If `LLM_AUTO_RESUBMIT=1`,
+   the job submits its successor and shuts down cleanly, which frees the node for it. The
+   successor needs a few minutes to start, so expect a short gap. `LLM_AUTO_RESUBMIT_MAX` caps
+   the chain.
 
 ## Node facts that drive decisions
 
