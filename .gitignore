@@ -1,0 +1,46 @@
+# Secrets and site-specific config
+.env
+.env.*
+!.env.example
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Model weights and caches
+models/
+hf_cache/
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.pth
+
+# Runtime (run files, logs, PIDs, SLURM output)
+run/
+logs/
+*.log
+*.pid
+slurm-*.out
+*.out
+*.err
+
+# User data (chat history, uploads, generated files)
+data/
+generated/
+*.db
+*.sqlite
+*.sqlite3
+
+# Eval outputs
+evals/results/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
