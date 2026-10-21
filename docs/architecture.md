@@ -42,16 +42,21 @@ The UI services live on the laptop for two reasons:
 
 ## Model roster and GPU budget
 
-This is the initial budget for one 96 GB RTX PRO 6000. Phase 1 tunes it, and the roster file is
-the source of truth once it exists.
+Measured on one 96 GB RTX PRO 6000 (97,887 MiB) with all four models and the gateway running
+(vLLM 0.32.0, 2026-10-21). The roster file is the source of truth for the shares and flags.
+"Process" is what `nvidia-smi` reports per process after a smoke test: the vLLM share plus the
+CUDA context and some request-time allocations.
 
-| Name | Checkpoint | `--gpu-memory-utilization` | ≈ GB | Notes |
+| Name | Checkpoint | `--gpu-memory-utilization` | Process GiB | Measured |
 |---|---|---|---|---|
-| `qwen-main` | Qwen3.8-27B-FP8 + MTP head | 0.60 | 57 | Measured: 28.4 GiB weights, 25.7 GiB FP8 KV cache (~808k tokens, 3× the full 262k context). `--max-num-seqs 64`. |
-| `qwen-fast` | Qwen3.5-4B | 0.12 | 11.5 | Task model (titles, search queries, tags) and quick Q&A. Context capped at 32k. |
-| `embed` | Qwen3-Embedding-0.6B | 0.04 | 4 | RAG indexing and queries. Context 8k (chunks are short). |
-| `rerank` | Qwen3-Reranker-0.6B | 0.04 | 4 | RAG precision; vLLM `/rerank` endpoint. Context 8k. |
-| (headroom) | | ~0.20 | 19 | CUDA contexts (~0.5–1 GB per process), activations, safety margin |
+| `qwen-main` | Qwen3.8-27B-FP8 + MTP head | 0.60 | 57.8 | 28.9 GiB weights (with the MTP head), 24.9 GiB BF16 KV cache = 369k tokens (1.41 full 262k contexts). MTP with 2 draft tokens, `--max-num-seqs 64`. 73 tok/s single stream (D-006). |
+| `qwen-fast` | Qwen3.5-4B | 0.12 | 10.6 | 7.9 GiB weights, 1.7 GiB KV = 50.8k tokens (1.55 full 32k contexts). Text only (image input off), thinking off by default, `--max-num-seqs 16`, no MTP. 142 tok/s single stream. Task model (titles, search queries, tags) and quick Q&A. |
+| `embed` | Qwen3-Embedding-0.6B | 0.04 | 4.0 | 1.1 GiB weights, 1.9 GiB KV = 17.5k tokens. 1024-dim vectors, 8k context. |
+| `rerank` | Qwen3-Reranker-0.6B | 0.04 | 4.0 | 1.1 GiB weights, 1.9 GiB KV = 17.4k tokens. `/rerank` with the model card's prompt template, 8k context. |
+| (headroom) | | 0.20 | ~19 | Free after the smoke test: 97,887 MiB total minus 78,278 MiB in use. |
+
+The embedding and rerank shares are about three times what they use. If memory gets tight,
+they are the first to shrink.
 
 **On demand, as a separate job:** a larger coding model, for example Qwen3-Coder-Next
 (80B MoE). It runs on this GPU when the main job is down, or on another GPU node, and the

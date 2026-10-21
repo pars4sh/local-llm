@@ -14,6 +14,7 @@
 #   enabled                 start this model in the serving job
 #   extra_args              further `vllm serve` flags. The launcher owns --host, --port,
 #                           --served-model-name, --gpu-memory-utilization and --max-model-len.
+#                           Paths are relative to the repository root.
 #
 # Keep the budget table in docs/architecture.md in sync with the shares here.
 
@@ -37,7 +38,10 @@ extra_args = [
     "--tool-call-parser", "qwen3_coder",
 ]
 
-# Task model and quick Q&A. Flags not yet tested on the pinned vLLM.
+# Task model (titles, tags, search queries) and quick Q&A. Thinking is off by default, since
+# task requests don't set chat_template_kwargs; a request can still turn it on. No image
+# input: the Figures preset uses qwen-main, and skipping the vision encoder saves memory.
+# Hybrid attention like qwen-main, so --max-num-seqs must fit its small share.
 [[model]]
 name = "qwen-fast"
 kind = "chat"
@@ -45,12 +49,15 @@ hf_repo = "Qwen/Qwen3.5-4B"
 gpu_memory_utilization = 0.12
 max_model_len = 32768
 order = 2
-enabled = false
+enabled = true
 extra_args = [
+    "--max-num-seqs", "16",
+    "--limit-mm-per-prompt", '{"image": 0, "video": 0}',
+    "--default-chat-template-kwargs", '{"enable_thinking": false}',
     "--reasoning-parser", "qwen3",
 ]
 
-# RAG chunks are short, so a small context keeps the share small. Flags not yet tested.
+# RAG chunks are short, so a small context keeps the share small.
 [[model]]
 name = "embed"
 kind = "embed"
@@ -58,13 +65,15 @@ hf_repo = "Qwen/Qwen3-Embedding-0.6B"
 gpu_memory_utilization = 0.04
 max_model_len = 8192
 order = 3
-enabled = false
+enabled = true
 extra_args = [
     "--runner", "pooling",
+    "--convert", "embed",
 ]
 
 # The original Qwen3 reranker checkpoint is a causal LM; vLLM serves it as a classifier
-# through these overrides. Flags not yet tested.
+# through these overrides, at /rerank. The template is the model card's prompt format;
+# without it vLLM warns that scores may be inaccurate.
 [[model]]
 name = "rerank"
 kind = "rerank"
@@ -72,9 +81,10 @@ hf_repo = "Qwen/Qwen3-Reranker-0.6B"
 gpu_memory_utilization = 0.04
 max_model_len = 8192
 order = 4
-enabled = false
+enabled = true
 extra_args = [
     "--runner", "pooling",
     "--hf-overrides",
     '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}',
+    "--chat-template", "config/templates/qwen3_reranker.jinja",
 ]

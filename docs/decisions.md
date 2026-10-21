@@ -137,6 +137,18 @@ embedding and reranking on the GPU through the gateway. Use hybrid search in Ope
 **Rejected.** pymupdf4llm with whole papers pasted into the prompt, which is what the old app
 did. It overflowed the context and lost tables.
 
+**Served** (2026-10-21, vLLM 0.32.0, through the gateway; retrieval quality still to be judged
+in phase 3):
+- `embed`: `--runner pooling --convert embed`. 1024-dim vectors; a paraphrase scores 0.74
+  against 0.25 for an unrelated sentence.
+- `rerank`: `--runner pooling` with the `--hf-overrides` that turn the original causal-LM
+  checkpoint into a yes/no classifier, served at `/rerank`. It needs the model card's prompt
+  format as a score template (`config/templates/qwen3_reranker.jinja`), or vLLM warns that scores
+  may be inaccurate. vLLM ships its own template only in its source tree, not in the wheel, so
+  this one is written from the model card, verified byte for byte against it, and tolerant of
+  vLLM's one-message warmup. Smoke test: the right document scores 0.994, the others 0.001 or
+  less.
+
 ## D-008: Keep reading tools and acting tools in separate presets
 **Status:** accepted · 2026-10-21
 

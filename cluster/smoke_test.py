@@ -11,6 +11,8 @@ Checks:
 - the main chat model (default: the first chat model): plain chat, an image question, a tool
   call, thinking on and off, a ~50k-token prompt, single-stream decode speed
 - every other chat model: plain chat
+- embedding models: vectors that rank a paraphrase above an unrelated sentence
+- rerank models: the relevant document ranked first
 
 Prints PASS/FAIL with timings per check and exits non-zero if any check fails. vLLM binds to
 127.0.0.1, so run this on the GPU node (cluster/smoke_test.sh shows how). Standard library only.
@@ -21,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
 import random
 import struct
@@ -295,6 +298,41 @@ def check_decode(ep, model):
     return r.completion_tokens == 512, r, f"{r.completion_tokens} tokens"
 
 
+def check_embed(ep, model):
+    texts = [
+        "The cat sits on the mat.",
+        "A cat is resting on a rug.",
+        "Quarterly revenue grew by eight percent.",
+    ]
+    data = ep.json("/v1/embeddings", {"model": model, "input": texts})["data"]
+    vecs = [d["embedding"] for d in sorted(data, key=lambda d: d["index"])]
+
+    def cos(a, b):
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        return dot / math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))
+
+    near, far = cos(vecs[0], vecs[1]), cos(vecs[0], vecs[2])
+    ok = len({len(v) for v in vecs}) == 1 and near > far
+    return ok, None, f"dim {len(vecs[0])}, similar {near:.2f} > unrelated {far:.2f}"
+
+
+def check_rerank(ep, model):
+    docs = [
+        "Berlin is the capital of Germany.",
+        "Paris is the capital and largest city of France.",
+        "Bananas are rich in potassium.",
+    ]
+    body = {
+        "model": model,
+        "query": "What is the capital of France?",
+        "documents": docs,
+    }
+    results = ep.json("/v1/rerank", body)["results"]
+    ranked = sorted(results, key=lambda r: -r["relevance_score"])
+    scores = ", ".join(f"{r['index']}:{r['relevance_score']:.3f}" for r in ranked)
+    return ranked[0]["index"] == 1, None, f"scores (index:score) {scores}"
+
+
 def check_auth(ep, model):
     """The gateway must refuse requests without a key or with a wrong one."""
     codes = []
@@ -373,6 +411,8 @@ def main() -> int:
         checks.append(("gateway lists models", check_models(names), "gateway"))
     checks += [(label, fn, main_model) for label, fn in MAIN_CHECKS]
     checks += [("plain chat", check_plain, n) for n in chat_models if n != main_model]
+    checks += [("embeddings", check_embed, n) for n in names if kinds[n] == "embed"]
+    checks += [("rerank", check_rerank, n) for n in names if kinds[n] == "rerank"]
 
     failed = 0
     for label, fn, model in checks:

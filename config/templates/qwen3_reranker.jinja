@@ -1,0 +1,18 @@
+{#- Score template for the original Qwen3 reranker (Qwen3-Reranker-*), as in its model card.
+    vLLM passes the query and the document as messages with roles "query" and "document";
+    an optional `instruction` can come from the request's chat_template_kwargs. Messages are
+    looked up by role with empty defaults, so vLLM's one-message startup warmup renders too. -#}
+{%- set query = messages | selectattr("role", "equalto", "query") | map(attribute="content") | first -%}
+{%- set document = messages | selectattr("role", "equalto", "document") | map(attribute="content") | first -%}
+<|im_start|>system
+Judge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>
+<|im_start|>user
+<Instruct>: {{ instruction | default("Given a web search query, retrieve relevant passages that answer the query") }}
+<Query>: {{ query | default("") }}
+<Document>: {{ document | default("") }}<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+
