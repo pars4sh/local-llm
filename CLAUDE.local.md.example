@@ -1,0 +1,14 @@
+# Site facts for Claude Code
+
+<!-- Copy to CLAUDE.local.md (gitignored) and fill in. Claude Code loads it after CLAUDE.md.
+     Put here what is true about YOUR cluster and must not be published. -->
+
+- Cluster access: ssh alias `<alias>` (jump hosts configured in ~/.ssh/config)
+- Login shell on cluster nodes: <tcsh/bash>
+- GPU partition for this project: `<partition>`: <GPU model, memory>, <wall-time limit>, <scheduling: whole-node or shared>, <cores>
+- Other GPU partitions or nodes: <...>
+- Model directory: `<path>`
+- Internet access on compute nodes: <yes / no / unknown>
+- Node-local scratch on the GPU node: <path and size / none / unknown>
+- Legacy setup to retire in phase 6: <path, what is there>
+- Site policies worth knowing (job limits, login-node rules): <...>
