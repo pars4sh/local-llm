@@ -9,17 +9,17 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 ## Phase 1: Serving (cluster)
 - [x] Create a uv environment for vLLM (vLLM 0.32.0, see D-012). In a short GPU job
       (`cluster/check_env.py`), confirm that torch reports compute capability `(12, 0)`.
-- [ ] `scripts/download_models.sh`: on the login node, fetch the roster checkpoints into `$LLM_MODEL_DIR`.
-      (Script written; tick once qwen-main is downloaded with it.)
+- [x] `scripts/download_models.sh`: on the login node, fetch the roster checkpoints into `$LLM_MODEL_DIR`.
 - [x] Create the roster file, the single source of truth (planned: `config/models.toml`, which
       Python can read with `tomllib` and no extra dependencies). It holds each model's name,
       checkpoint, GPU share, max context and extra flags.
-- [ ] `cluster/serve.sbatch` with the main model only:
+- [x] `cluster/serve.sbatch` with the main model only:
   - free-port selection
   - run file
   - per-process logs
   - offline Hugging Face flags
-- [ ] `cluster/smoke_test.sh`: text, image, tool call, thinking on and off.
+- [x] `cluster/smoke_test.sh`: text, image, tool call, thinking on and off, a ~50k-token prompt,
+      single-stream decode speed. (Embeddings and rerank checks come with those models.)
 - [ ] Turn on MTP. Measure tokens per second with and without it, and record the numbers in D-006.
 - [ ] Add the fast, embed and rerank models. Start them in sequence, with a health wait between each.
 - [ ] LiteLLM gateway: config generated from the roster, a master key and one key per client.

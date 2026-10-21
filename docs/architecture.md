@@ -47,7 +47,7 @@ the source of truth once it exists.
 
 | Name | Checkpoint | `--gpu-memory-utilization` | ≈ GB | Notes |
 |---|---|---|---|---|
-| `qwen-main` | Qwen3.8-27B-FP8 + MTP head | 0.60 | 57 | ~30 GB weights; the rest is FP8 KV cache. Hybrid attention keeps the KV cache small, so full 262k context fits. |
+| `qwen-main` | Qwen3.8-27B-FP8 + MTP head | 0.60 | 57 | Measured: 28.4 GiB weights, 25.7 GiB FP8 KV cache (~808k tokens, 3× the full 262k context). `--max-num-seqs 64`. |
 | `qwen-fast` | Qwen3.5-4B | 0.12 | 11.5 | Task model (titles, search queries, tags) and quick Q&A. Context capped at 32k. |
 | `embed` | Qwen3-Embedding-0.6B | 0.04 | 4 | RAG indexing and queries. Context 8k (chunks are short). |
 | `rerank` | Qwen3-Reranker-0.6B | 0.04 | 4 | RAG precision; vLLM `/rerank` endpoint. Context 8k. |
@@ -105,7 +105,7 @@ choices that depend on them.
 | The driver supports CUDA 13.2 | cu130 wheels for torch and vLLM work |
 | No node-local disk | Weights load from the shared filesystem; `LLM_STAGE_DIR` stays empty by default |
 | `/tmp` is RAM-backed tmpfs | Fine for the per-job `TMPDIR`. Staging weights there would cost host RAM |
-| Shared storage writes ~670 MB/s with a single stream (reads not measured yet) | If reads are similar, ~30 GB of weights load in under a minute; the job logs the real load time |
+| Shared storage writes ~670 MB/s with a single stream; vLLM reads the many weight shards much faster | 29 GB of weights loaded in 13 s cold and 8 s warm, so staging isn't needed |
 
 When the job is down, Open WebUI keeps its history but cannot reach any model. The tunnel
 script reconnects to the new node and port once the next job writes its run file.

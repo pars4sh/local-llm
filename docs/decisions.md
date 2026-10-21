@@ -129,7 +129,7 @@ job's run file.
 **Why.** vLLM and LiteLLM both pin heavy, conflicting dependencies, and uv is the cluster's convention.
 
 ## D-012: vLLM 0.32.0 on torch 2.13.0 (CUDA 13.0 wheels)
-**Status:** to validate · 2026-10-21
+**Status:** accepted · 2026-10-21 (served the main model and passed the smoke test)
 
 **Context.** Qwen3.8 needs vLLM 0.17 or newer. Community runs on this GPU class used vLLM 0.27.1
 with torch 2.13 and CUDA 13.0 wheels. The development GPU node's driver supports CUDA 13.2, and
@@ -153,16 +153,58 @@ the node has no system CUDA toolkit.
 `torch.version.cuda` 13.0, vLLM and its compiled kernels import, a Triton kernel runs, and a
 FlashInfer JIT kernel compiles and runs.
 
-**Workarounds.**
-- `humming-kernels[cu13]` (a vLLM dependency) requires nvcc and CCCL without a version bound,
-  so uv picked CUDA 13.4 versions. FlashInfer's JIT then failed with "CUDA compiler and CUDA
-  toolkit headers are incompatible". `constraint-dependencies` in `cluster/pyproject.toml` keeps
-  nvcc, crt and nvvm at 13.0.88 and CCCL at 13.0.85, the versions of torch's `cuda-toolkit` 13.0.3.
-- FlashInfer's JIT needs a CUDA toolkit; without one, vLLM disables FlashInfer. The job points
-  `CUDA_HOME` at the toolkit pip installed into the environment (`nvidia/cu13`), with the
-  environment's `ninja` on `PATH`. That toolkit ships only `libcudart.so.13`, so the job links
-  `libcudart.so` to it in a per-job directory on `LIBRARY_PATH` (`use_pip_cuda_toolkit` in
-  `scripts/env.sh`).
+**Workarounds.** Re-check each one when upgrading vLLM, torch or FlashInfer. Rerun
+`cluster/check_env.py` in a GPU job; its FlashInfer line must say OK.
+
+1. **Hold the pip CUDA compiler at torch's CUDA version.**
+   - *Why:* `humming-kernels[cu13]`, a vLLM dependency, requires nvcc and CCCL without a version
+     bound, so uv resolved them to CUDA 13.4 while torch's `cuda-toolkit` is 13.0.3. FlashInfer's
+     JIT then failed with "CUDA compiler and CUDA toolkit headers are incompatible".
+   - *Fix:* `constraint-dependencies` in `cluster/pyproject.toml` hold nvcc, crt and nvvm at
+     13.0.88 and CCCL at 13.0.85, the versions in torch's `cuda-toolkit` 13.0.3.
+   - *On upgrade:* read the new torch's `cuda-toolkit` pin and move the constraints with it. Drop
+     them if the dependency gains a bound.
+2. **Point `CUDA_HOME` at the CUDA toolkit inside the environment.**
+   - *Why:* FlashInfer compiles kernels on first use and needs nvcc and ninja. The GPU node has
+     no system CUDA toolkit, and without one vLLM disables FlashInfer with a single log line and
+     falls back to other kernels.
+   - *Fix:* `use_pip_cuda_toolkit` in `scripts/env.sh` sets `CUDA_HOME` to the environment's
+     `nvidia/cu13`. `cluster/serve.sbatch` calls it and puts the environment's `bin/` (which has
+     ninja) on `PATH`.
+   - *On upgrade:* check the toolkit path (`cu13` changes on a CUDA major version bump), and
+     check in the vLLM log which attention backend it selected.
+3. **Give the linker an unversioned `libcudart.so`.**
+   - *Why:* FlashInfer links its JIT kernels with `-lcudart`, but the pip runtime ships only
+     `libcudart.so.13`. The link failed with "cannot find -lcudart".
+   - *Fix:* the same helper links `libcudart.so` to `libcudart.so.13` in a per-job directory
+     under `TMPDIR` and adds it to `LIBRARY_PATH`, so nothing inside the environment is modified.
+   - *On upgrade:* check the library's major version and whether FlashInfer still links this way.
+
+4. **Set `--max-num-seqs 64` on the main model.**
+   - *Why:* Qwen3.8's linear-attention layers keep one state block per running sequence. vLLM
+     0.32 defaults to 1024 sequences, but the 0.60 GPU share holds 505 blocks, so startup failed
+     with "max_num_seqs (1024) exceeds available Mamba cache blocks (505)".
+   - *Fix:* `--max-num-seqs 64` in the roster's `extra_args`, which is plenty for a few people
+     plus background tasks.
+   - *On upgrade, or when the share or context changes:* the error states the block count, so
+     keep `--max-num-seqs` below it.
+
+**Verified serving** (2026-10-21, 30-minute test job, `cluster/smoke_test.sh` 7/7 passed):
+
+| | |
+|---|---|
+| Flags | `--gpu-memory-utilization 0.6 --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 64 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder` |
+| Attention | FLASHINFER, chosen from FLASHINFER and TRITON_ATTN; decode uses XQA over the FP8 KV cache. FlashInfer also runs linear-attention prefill and top-p/top-k sampling. The vision encoder uses FLASH_ATTN. |
+| FP8 GEMMs | CUTLASS (vLLM turns DeepGEMM off for this architecture on Blackwell) |
+| GPU memory | 58.4 GiB for the vLLM process: 28.4 GiB weights, 25.7 GiB KV cache (807,524 tokens, 3.08 full 262k contexts), 0.8 GiB CUDA graphs |
+| Weight load | 29 GB from the shared filesystem: 13.0 s cold, 7.8 s warm. Staging is not needed. |
+| Startup | 130 s from launch to `/health`. Engine init took 96 s: torch.compile 39 s and CUDA graphs 32 s (the first run also JIT-compiled a FlashInfer decode kernel, now cached). |
+| Decode | 46 tok/s, single stream (512 tokens, thinking off) |
+| Prefill | 51,177-token prompt in 6.9 s (~7,400 tok/s) |
+
+**Open.** The checkpoint has no FP8 KV scales, so vLLM uses 1.0 and warns about possible
+accuracy loss. The phase 5 evals should compare `--kv-cache-dtype fp8` with `auto` before this
+counts as settled.
 
 **Rejected.**
 - vLLM 0.27.1: proven on this GPU class by others, with the same torch. It stays the fallback if
