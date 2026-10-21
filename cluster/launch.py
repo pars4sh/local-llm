@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Start the enabled roster models on this GPU node and keep them running.
+"""Start the enabled roster models and the gateway on this GPU node, and keep them running.
 
-Runs inside the serving job (cluster/serve.sbatch). For each enabled model, in start order:
-pick a free port, start `vllm serve` bound to 127.0.0.1 with its own log file, and wait for
-GET /health before starting the next one (each process sizes its GPU share at startup).
-Then write the run file $LLM_RUN_DIR/run/<jobid>.env and supervise. If a model exits, or
-the job gets SIGTERM/SIGINT, stop every model and remove the run file.
+Runs inside the serving job (cluster/serve.sbatch):
+1. For each enabled model, in start order: pick a free port, start `vllm serve` bound to
+   127.0.0.1 with its own log file, and wait for GET /health before starting the next one
+   (each process sizes its GPU share at startup).
+2. Generate the LiteLLM config from the roster and start the gateway on all interfaces. It
+   accepts only the master key or a client key (gateway/local_llm_gateway.py).
+3. Write the run file $LLM_RUN_DIR/run/<jobid>.env and supervise.
+
+If a process exits, or the job gets SIGTERM/SIGINT, stop everything and remove the run file.
 
 Environment:
-    LLM_MODEL_DIR        weights directory (required)
-    LLM_RUN_DIR          run files and logs (default ~/.local-llm)
-    SLURM_JOB_ID         set by SLURM
-    LLM_STARTUP_TIMEOUT  seconds to wait for one model's /health (default 1800)
+    LLM_MODEL_DIR          weights directory (required)
+    LLM_RUN_DIR            run files and logs (default ~/.local-llm)
+    GATEWAY_MASTER_KEY     gateway admin key (required unless LLM_GATEWAY=0)
+    LLM_GATEWAY_KEYS       client key hashes (default $LLM_RUN_DIR/gateway-keys.json)
+    LLM_GATEWAY=0          serve the models without the gateway
+    LLM_STARTUP_TIMEOUT    seconds to wait for one process to become healthy (default 1800)
+    SLURM_JOB_ID           set by SLURM
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import http.client
+import json
 import os
 import re
 import shlex
@@ -194,6 +202,57 @@ def env_key(name: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", name.upper())
 
 
+def gateway_config(ports: dict[str, int], models: list[roster.Model]) -> dict:
+    """LiteLLM proxy config: one alias per roster model, pointing at its local vLLM port."""
+    modes = {"chat": "chat", "embed": "embedding", "rerank": "rerank"}
+    entries = []
+    for m in models:
+        base = f"http://127.0.0.1:{ports[m.name]}"
+        entries.append(
+            {
+                "model_name": m.name,
+                "litellm_params": {
+                    "model": f"hosted_vllm/{m.name}",
+                    # LiteLLM appends /rerank itself; the other routes live under /v1.
+                    "api_base": base if m.kind == "rerank" else f"{base}/v1",
+                    "api_key": "none",  # vLLM listens on 127.0.0.1 only, without a key
+                },
+                "model_info": {"mode": modes[m.kind]},
+            }
+        )
+    return {
+        "model_list": entries,
+        "general_settings": {
+            "master_key": "os.environ/LITELLM_MASTER_KEY",
+            "custom_auth": "local_llm_gateway.user_api_key_auth",
+        },
+        "litellm_settings": {
+            "drop_params": False,
+            "num_retries": 0,
+            "request_timeout": 3600,
+            "callbacks": ["local_llm_gateway.usage_log"],
+        },
+    }
+
+
+def gateway_env(run_dir: Path) -> dict:
+    env = dict(os.environ)
+    env.update(
+        LITELLM_MASTER_KEY=os.environ["GATEWAY_MASTER_KEY"],
+        LLM_GATEWAY_KEYS=os.environ.get("LLM_GATEWAY_KEYS")
+        or str(run_dir / "gateway-keys.json"),
+        LLM_RUN_DIR=str(run_dir),
+        PYTHONPATH=str(REPO / "gateway"),
+        # No network fetches at startup, no telemetry, no admin UI (it needs a database).
+        LITELLM_LOCAL_MODEL_COST_MAP="True",
+        LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS="True",
+        LITELLM_TELEMETRY="False",
+        DISABLE_ADMIN_UI="True",
+        NO_DOCS="True",
+    )
+    return env
+
+
 def main() -> int:
     global _log_file
     job = os.environ.get("SLURM_JOB_ID") or sys.exit("launch: not inside a SLURM job")
@@ -204,6 +263,8 @@ def main() -> int:
     timeout = float(os.environ.get("LLM_STARTUP_TIMEOUT") or 1800)
     node = os.environ.get("SLURMD_NODENAME") or socket.gethostname().split(".")[0]
     vllm = str(Path(sys.executable).with_name("vllm"))
+    use_gateway = os.environ.get("LLM_GATEWAY", "1") != "0"
+    litellm = REPO / "gateway" / ".venv" / "bin" / "litellm"
 
     log_dir = run_dir / "logs" / job
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +291,12 @@ def main() -> int:
     if missing:
         log(f"weights missing under {model_dir} for: {', '.join(missing)}")
         return 1
+    if use_gateway and not (litellm.exists() and os.environ.get("GATEWAY_MASTER_KEY")):
+        log(
+            "the gateway needs gateway/.venv (uv sync --locked --project gateway) and "
+            "GATEWAY_MASTER_KEY in .env; set LLM_GATEWAY=0 to serve without it"
+        )
+        return 1
     if os.environ.get("LLM_STAGE_DIR"):
         log(
             "LLM_STAGE_DIR is set, but weight staging is not implemented yet; loading in place"
@@ -238,7 +305,8 @@ def main() -> int:
         log("LLM_AUTO_RESUBMIT=1, but auto-resubmit is not implemented yet")
 
     log(
-        f"job {job} on {node}; models: {', '.join(m.name for m in models)}; logs in {log_dir}"
+        f"job {job} on {node}; models: {', '.join(m.name for m in models)}; "
+        f"gateway: {'on' if use_gateway else 'off'}; logs in {log_dir}"
     )
     log(f"GPU memory before start: {gpu_memory()}")
     procs: dict[str, subprocess.Popen] = {}
@@ -268,6 +336,19 @@ def main() -> int:
                 run[f"LLM_MODEL_{env_key(m.name)}_PORT"] = str(port)
                 run[f"LLM_MODEL_{env_key(m.name)}_KIND"] = m.kind
 
+            if use_gateway:
+                port = free_port("0.0.0.0")
+                config = log_dir / "gateway.yaml"
+                config.write_text(json.dumps(gateway_config(ports, models), indent=2))
+                cmd = [str(litellm), "--config", str(config), "--host", "0.0.0.0",
+                       "--port", str(port), "--num_workers", "1"]  # fmt: skip
+                log_path = log_dir / "gateway.log"
+                log(f"starting the gateway on 0.0.0.0:{port}: {shlex.join(cmd)}")
+                procs["gateway"] = start(cmd, log_path, env=gateway_env(run_dir))
+                took = wait_ready("gateway", procs["gateway"], port, "/health/liveliness",
+                                  log_path, timeout)  # fmt: skip
+                log(f"gateway ready in {took:.1f} s")
+                run["LLM_GATEWAY_PORT"] = str(port)
         except StartupError as e:
             log(str(e))
             return 0 if _stop_signal is not None else 1
@@ -276,9 +357,7 @@ def main() -> int:
             dt.datetime.now().astimezone().isoformat(timespec="seconds")
         )
         write_run_file(run_file, run)
-        log(
-            f"all models ready in {time.monotonic() - job_t0:.1f} s; run file {run_file}"
-        )
+        log(f"all ready in {time.monotonic() - job_t0:.1f} s; run file {run_file}")
 
         while _stop_signal is None:
             for name, proc in procs.items():

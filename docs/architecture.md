@@ -62,8 +62,10 @@ gateway registers it by reading that job's run file. vLLM sleep-mode hot-swappin
 
 1. The job starts and picks free ports for the gateway and for each vLLM process.
 2. Each vLLM process binds to `127.0.0.1:<port>`. Only the gateway binds to all interfaces, and
-   it rejects requests that don't carry a valid key.
-3. The job writes `$LLM_RUN_DIR/run/<jobid>.env`, containing the node, the gateway port and the job ID.
+   it answers 401 to requests without the master key or a client key (D-013).
+3. The job writes `$LLM_RUN_DIR/run/<jobid>.env`: `LLM_JOB_ID`, `LLM_NODE`, `LLM_GATEWAY_PORT`,
+   `LLM_MODELS`, each model's port and kind, the log directory and the start time. The file
+   exists only while everything is up, and every job writes its own.
 4. **Laptop:** `client/tunnel.sh` reads the newest run file over SSH and forwards
    `127.0.0.1:$GATEWAY_LOCAL_PORT` to the gateway. Containers reach it at
    `host.docker.internal:$GATEWAY_LOCAL_PORT`.

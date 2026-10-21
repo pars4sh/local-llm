@@ -117,6 +117,11 @@ The figures in brackets are per-position acceptance rates.
 - MTP adds about 1 GiB of GPU memory (drafter weights and its KV) and 60–110 s of startup the
   first time a configuration compiles. The output is not bit-identical to running without MTP.
 
+**Attention backend.** With the BF16 KV cache, vLLM picks FLASH_ATTN from FLASH_ATTN,
+FLASHINFER, TRITON_ATTN and FLEX_ATTENTION. FlashInfer still runs the linear-attention prefill
+and top-p/top-k sampling, so it isn't silently disabled. With FP8 KV it picked FLASHINFER, with
+XQA decode.
+
 **Checked.** With MTP, `--max-num-seqs 64` still fits. The shared block pool holds 461 blocks
 with BF16 KV and MTP N=2 (439 with FP8), and every running sequence needs one.
 
@@ -247,3 +252,43 @@ applies; it would again if FP8 KV came back.
   flashinfer-python 0.7.0.post1.
 - `vllm download-kernels`: it fetches from a host outside the development login node's network
   allow list, and it adds an unpinned download step.
+
+## D-013: Gateway keys and usage log without a database
+**Status:** accepted · 2026-10-21
+
+**Context.** D-004 puts a LiteLLM proxy in front of the models with one key per client and a
+usage log. LiteLLM's own per-client keys (`/key/generate`) and its spend log need a Postgres
+database. A SLURM job has none, and a database outside the job would be one more service to run.
+
+**Decision.** Pin `litellm[proxy]==1.105.1` in its own environment (`gateway/`). The release was
+a week old when chosen; LiteLLM ships several releases a day, and a past release on PyPI was
+compromised, so upgrades are deliberate and the lock file holds hashes. Wire two hooks from
+`gateway/local_llm_gateway.py` into the config that `cluster/launch.py` generates:
+- **Auth** (`custom_auth`): a request passes with the master key or with a client key whose
+  SHA-256 is in the keys file (`$LLM_GATEWAY_KEYS`, mode 600). `scripts/new_client_key.sh`
+  issues, lists and revokes keys; the gateway rereads the file when it changes. Anything else
+  gets HTTP 401. Only `/health/liveliness` is open.
+- **Usage log** (a callback): one JSON line per request in `$LLM_RUN_DIR/usage/<YYYY-MM>.jsonl`
+  with time, client, model, call type, token counts, latency and status, but no content.
+  Rejected requests are logged too.
+
+The gateway fetches nothing at startup (`LITELLM_LOCAL_MODEL_COST_MAP`,
+`LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS`). Telemetry, the admin UI (it needs the database) and
+the API docs are off.
+
+**Verified** on the GPU (job with `qwen-main`, smoke test through the gateway with a temporary
+client key) and offline (real LiteLLM in front of fake vLLM servers that record what they
+receive):
+- requests without a key or with a wrong key get 401
+- image inputs, `tools`/`tool_choice`, `chat_template_kwargs` (`enable_thinking` on and off),
+  `max_tokens` and vLLM's own `ignore_eos` reach vLLM unchanged, and tool-call arguments come
+  back unchanged
+- reasoning text comes back unchanged, but **under a different field name**: vLLM 0.32 streams
+  it as `reasoning`, and LiteLLM renames it to `reasoning_content`. Clients should read
+  `reasoning_content` (Open WebUI does).
+- embeddings and rerank go through the gateway (offline so far)
+- the gateway adds about 0.1 s to the time to first token; decode speed is unchanged
+
+**Rejected.**
+- LiteLLM virtual keys with Postgres: needs a database service.
+- One shared key for all clients: no way to revoke or attribute usage per client.

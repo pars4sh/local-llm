@@ -4,9 +4,10 @@
 # vLLM listens on 127.0.0.1 on the GPU node, so run this inside the job's allocation:
 #   srun --jobid=<jobid> --overlap --ntasks=1 cluster/smoke_test.sh
 #
-# Usage: cluster/smoke_test.sh [RUN_FILE] [--model NAME]
+# Usage: cluster/smoke_test.sh [RUN_FILE] [--model NAME] [--direct]
 #   RUN_FILE defaults to $LLM_RUN_DIR/run/$SLURM_JOB_ID.env, which is the right file when
-#   started with srun --jobid as above.
+#   started with srun --jobid as above. If the job has a gateway, the checks go through it
+#   with a temporary client key that is revoked afterwards; --direct bypasses it.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -27,4 +28,12 @@ fi
 
 python=$REPO/cluster/.venv/bin/python
 [[ -x $python ]] || python=python3
-exec "$python" "$REPO/cluster/smoke_test.py" "$run_file" "$@"
+
+if grep -q '^LLM_GATEWAY_PORT=' "$run_file" && [[ " $* " != *" --direct "* ]]; then
+  client=smoke-${SLURM_JOB_ID:-local}-$$
+  LLM_SMOKE_KEY=$("$REPO/scripts/new_client_key.sh" "$client" 2>/dev/null) ||
+    die "could not issue a temporary client key"
+  export LLM_SMOKE_KEY
+  trap '"$REPO/scripts/new_client_key.sh" --revoke "$client" >/dev/null 2>&1 || true' EXIT
+fi
+"$python" "$REPO/cluster/smoke_test.py" "$run_file" "$@"

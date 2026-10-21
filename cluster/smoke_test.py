@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Smoke-test the chat model of a running serving job.
+"""Smoke-test a running serving job, through its gateway when it has one.
 
-Usage: smoke_test.py RUN_FILE [--model NAME]
+Usage: smoke_test.py RUN_FILE [--model NAME] [--direct]
 
-Reads the job's run file and checks one chat model (default: the first chat model in it):
-plain chat, an image question, a tool call, thinking on and off, a ~50k-token prompt, and
-single-stream decode speed. Prints PASS/FAIL with timings per check and exits non-zero if
-any check fails. vLLM binds to 127.0.0.1, so run this on the GPU node (cluster/smoke_test.sh
-shows how). Standard library only.
+Reads the job's run file. With a gateway, every request goes through it with the client key
+in $LLM_SMOKE_KEY (cluster/smoke_test.sh issues a temporary one), and the gateway must
+reject requests without a valid key. --direct talks to each vLLM port instead.
+
+Checks:
+- the main chat model (default: the first chat model): plain chat, an image question, a tool
+  call, thinking on and off, a ~50k-token prompt, single-stream decode speed
+- every other chat model: plain chat
+
+Prints PASS/FAIL with timings per check and exits non-zero if any check fails. vLLM binds to
+127.0.0.1, so run this on the GPU node (cluster/smoke_test.sh shows how). Standard library only.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import random
 import struct
 import sys
@@ -29,7 +36,7 @@ _http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 @dataclass
 class Endpoint:
-    """An OpenAI-compatible server, with an optional API key."""
+    """An OpenAI-compatible server: a vLLM port or the gateway, with an optional key."""
 
     base: str
     key: str | None = None
@@ -288,6 +295,29 @@ def check_decode(ep, model):
     return r.completion_tokens == 512, r, f"{r.completion_tokens} tokens"
 
 
+def check_auth(ep, model):
+    """The gateway must refuse requests without a key or with a wrong one."""
+    codes = []
+    for key in (None, "sk-not-a-real-key"):
+        try:
+            Endpoint(ep.base, key).json("/v1/models")
+            codes.append(200)
+        except urllib.error.HTTPError as e:
+            codes.append(e.code)
+    ok = all(c in (401, 403) for c in codes)
+    return ok, None, f"no key -> {codes[0]}, wrong key -> {codes[1]}"
+
+
+def check_models(names: list[str]):
+    """A check that the gateway lists exactly the run file's models."""
+
+    def check(ep, _model):
+        listed = sorted(m["id"] for m in ep.json("/v1/models")["data"])
+        return listed == sorted(names), None, f"{listed}"
+
+    return check
+
+
 MAIN_CHECKS = [
     ("plain chat", check_plain),
     ("image question", check_image),
@@ -302,9 +332,8 @@ MAIN_CHECKS = [
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("run_file")
-    p.add_argument(
-        "--model", help="model name (default: first chat model in the run file)"
-    )
+    p.add_argument("--model", help="main chat model (default: first chat model)")
+    p.add_argument("--direct", action="store_true", help="bypass the gateway")
     args = p.parse_args()
 
     run = read_run_file(args.run_file)
@@ -313,34 +342,60 @@ def main() -> int:
     def key(name: str) -> str:
         return "".join(c if c.isalnum() else "_" for c in name.upper())
 
-    chat_models = [n for n in names if run.get(f"LLM_MODEL_{key(n)}_KIND") == "chat"]
-    model = args.model or (chat_models[0] if chat_models else None)
-    if not model or model not in names:
-        print(f"no chat model {model or ''} in {args.run_file} (models: {names})")
+    kinds = {n: run.get(f"LLM_MODEL_{key(n)}_KIND") for n in names}
+    chat_models = [n for n in names if kinds[n] == "chat"]
+    main_model = args.model or (chat_models[0] if chat_models else None)
+    if main_model not in chat_models:
+        print(f"no chat model {main_model or ''} in {args.run_file} (models: {names})")
         return 1
-    port = int(run[f"LLM_MODEL_{key(model)}_PORT"])
-    ep = Endpoint(f"http://127.0.0.1:{port}")
+
+    gateway = run.get("LLM_GATEWAY_PORT") and not args.direct
+    if gateway:
+        smoke_key = os.environ.get("LLM_SMOKE_KEY")
+        if not smoke_key:
+            print("set LLM_SMOKE_KEY to a client key (cluster/smoke_test.sh does this)")
+            return 1
+        gw = Endpoint(f"http://{run['LLM_NODE']}:{run['LLM_GATEWAY_PORT']}", smoke_key)
+
+    def endpoint(name: str) -> Endpoint:
+        if gateway:
+            return gw
+        return Endpoint(f"http://127.0.0.1:{run[f'LLM_MODEL_{key(name)}_PORT']}")
+
+    via = f"gateway {gw.base}" if gateway else "vLLM ports directly"
     print(
-        f"smoke test: {model} on {run.get('LLM_NODE')}:{port} (job {run.get('LLM_JOB_ID')})"
+        f"smoke test: job {run.get('LLM_JOB_ID')} on {run.get('LLM_NODE')}, via {via}"
     )
-    served = [m["id"] for m in ep.json("/v1/models")["data"]]
-    print(f"served models: {served}")
+
+    checks = []
+    if gateway:
+        checks.append(("gateway auth", check_auth, "gateway"))
+        checks.append(("gateway lists models", check_models(names), "gateway"))
+    checks += [(label, fn, main_model) for label, fn in MAIN_CHECKS]
+    checks += [("plain chat", check_plain, n) for n in chat_models if n != main_model]
 
     failed = 0
-    for label, fn in MAIN_CHECKS:
+    for label, fn, model in checks:
         stats = ""
         try:
-            ok, r, detail = fn(ep, model)
-            stats = (
-                f"ttft {r.ttft:5.2f}s  prompt {r.prompt_tokens:>6}  "
-                f"out {r.completion_tokens:>5}  decode {r.decode_tps:6.1f} tok/s  "
-                f"prefill {r.prefill_tps:8.0f} tok/s  "
+            ok, r, detail = fn(gw if model == "gateway" else endpoint(model), model)
+            if r is not None:
+                stats = (
+                    f"ttft {r.ttft:5.2f}s  prompt {r.prompt_tokens:>6}  "
+                    f"out {r.completion_tokens:>5}  decode {r.decode_tps:6.1f} tok/s  "
+                    f"prefill {r.prefill_tps:8.0f} tok/s  "
+                )
+        except urllib.error.HTTPError as e:
+            ok, detail = (
+                False,
+                f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}",
             )
         except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
             ok, detail = False, f"{type(e).__name__}: {e}"
         failed += not ok
-        print(f"[{'PASS' if ok else 'FAIL'}] {label:<18} {stats}{detail}", flush=True)
-    print(f"{len(MAIN_CHECKS) - failed}/{len(MAIN_CHECKS)} checks passed")
+        name = f"{label} ({model})"
+        print(f"[{'PASS' if ok else 'FAIL'}] {name:<32} {stats}{detail}", flush=True)
+    print(f"{len(checks) - failed}/{len(checks)} checks passed")
     return 1 if failed else 0
 
 
