@@ -1,0 +1,7 @@
+# Variants for the MTP and KV cache study (D-006). One LABEL=FLAGS per line; FLAGS replace or
+# add to the roster's extra_args and are split like a shell command line.
+fp8=
+fp8-mtp2=--speculative-config '{"method": "mtp", "num_speculative_tokens": 2}'
+fp8-mtp3=--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'
+auto-mtp2=--kv-cache-dtype auto --speculative-config '{"method": "mtp", "num_speculative_tokens": 2}'
+auto-mtp3=--kv-cache-dtype auto --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'

@@ -11,11 +11,13 @@ Contents:
 | File | Purpose |
 |---|---|
 | `serve.sbatch` | Job entry point. Reads `.env`, sets up a per-job `TMPDIR` and the pip CUDA toolkit, runs `launch.py` |
-| `submit.sh` | Submits `serve.sbatch` with the partition, time, account and output path from `.env`; `--print` shows the command |
+| `submit.sh` | Submits `serve.sbatch` (or `--script FILE`) with the partition, time, account and output path from `.env`; `--print` shows the command |
 | `launch.py` | Starts each enabled model in roster order with free ports and `/health` waits, logs startup milestones, writes the run file, and stops everything on exit |
 | `roster.py` | Validates `config/models.toml` and builds each model's `vllm serve` command |
 | `smoke_test.sh` / `smoke_test.py` | Checks a live job from inside its allocation: text, image, tool call, thinking on and off, a ~50k-token prompt, decode speed |
 | `check_env.py` | GPU environment check for a short job: compute capability, vLLM import, Triton and FlashInfer kernels |
+| `bench.py` / `bench.sbatch` | Benchmark job: starts the main model once per flag variant and measures decode speed, 4-stream throughput, MTP acceptance, KV capacity and a ~200k-token needle test |
+| `bench_mtp_kv.txt` | The variants behind D-006 (MTP and KV cache type) |
 | `pyproject.toml` / `uv.lock` | Pinned vLLM environment (D-012) |
 
 Quick use (from the repository root; works in tcsh):
