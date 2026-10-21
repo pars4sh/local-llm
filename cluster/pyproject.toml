@@ -1,0 +1,23 @@
+[project]
+name = "local-llm-cluster"
+version = "0.1.0"
+description = "vLLM environment for the local-llm serving job"
+requires-python = "==3.12.*"
+# vllm pins torch exactly (2.13.0, a CUDA 13 build on PyPI); uv.lock pins the rest.
+# See docs/decisions.md before changing the version.
+dependencies = [
+    "vllm==0.32.0",
+]
+
+[tool.uv]
+package = false
+python-preference = "only-managed"
+# humming-kernels[cu13] pulls nvcc and CCCL without a bound, which resolves to a newer CUDA
+# than torch's cuda-toolkit 13.0.3. FlashInfer's JIT then fails with "CUDA compiler and CUDA
+# toolkit headers are incompatible". Keep the pip toolkit at torch's versions.
+constraint-dependencies = [
+    "nvidia-cuda-nvcc==13.0.88.*",
+    "nvidia-cuda-crt==13.0.88.*",
+    "nvidia-nvvm==13.0.88.*",
+    "nvidia-cuda-cccl==13.0.85.*",
+]

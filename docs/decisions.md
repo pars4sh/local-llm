@@ -127,3 +127,47 @@ job's run file.
 **Decision.** Give vLLM, the gateway and the evals each a separate uv environment with exact pins.
 
 **Why.** vLLM and LiteLLM both pin heavy, conflicting dependencies, and uv is the cluster's convention.
+
+## D-012: vLLM 0.32.0 on torch 2.13.0 (CUDA 13.0 wheels)
+**Status:** to validate · 2026-10-21
+
+**Context.** Qwen3.8 needs vLLM 0.17 or newer. Community runs on this GPU class used vLLM 0.27.1
+with torch 2.13 and CUDA 13.0 wheels. The development GPU node's driver supports CUDA 13.2, and
+the node has no system CUDA toolkit.
+
+**Decision.** Pin the newest stable release, `vllm==0.32.0` (released 2026-10-18), in
+`cluster/pyproject.toml`, with every other version fixed by `cluster/uv.lock`. Python 3.12
+(uv-managed). The versions that matter:
+
+| Package | Version |
+|---|---|
+| vllm | 0.32.0 |
+| torch | 2.13.0 (CUDA 13.0 build from PyPI) |
+| torchvision | 0.28.0 |
+| transformers | 5.19.0 |
+| flashinfer-python | 0.7.0.post1 |
+| triton | 3.7.1 |
+| nvidia-cuda-runtime / nvidia-cuda-nvcc | 13.0.96 / 13.0.88 |
+
+**Verified in a GPU job** with `cluster/check_env.py`: compute capability `(12, 0)`,
+`torch.version.cuda` 13.0, vLLM and its compiled kernels import, a Triton kernel runs, and a
+FlashInfer JIT kernel compiles and runs.
+
+**Workarounds.**
+- `humming-kernels[cu13]` (a vLLM dependency) requires nvcc and CCCL without a version bound,
+  so uv picked CUDA 13.4 versions. FlashInfer's JIT then failed with "CUDA compiler and CUDA
+  toolkit headers are incompatible". `constraint-dependencies` in `cluster/pyproject.toml` keeps
+  nvcc, crt and nvvm at 13.0.88 and CCCL at 13.0.85, the versions of torch's `cuda-toolkit` 13.0.3.
+- FlashInfer's JIT needs a CUDA toolkit; without one, vLLM disables FlashInfer. The job points
+  `CUDA_HOME` at the toolkit pip installed into the environment (`nvidia/cu13`), with the
+  environment's `ninja` on `PATH`. That toolkit ships only `libcudart.so.13`, so the job links
+  `libcudart.so` to it in a per-job directory on `LIBRARY_PATH` (`use_pip_cuda_toolkit` in
+  `scripts/env.sh`).
+
+**Rejected.**
+- vLLM 0.27.1: proven on this GPU class by others, with the same torch. It stays the fallback if
+  0.32.0 fails to serve.
+- `flashinfer-cubin` from PyPI: the newest there is 0.6.13, which doesn't match
+  flashinfer-python 0.7.0.post1.
+- `vllm download-kernels`: it fetches from a host outside the development login node's network
+  allow list, and it adds an unpinned download step.

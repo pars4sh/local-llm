@@ -7,8 +7,8 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - [x] `.gitignore`, `.env.example`, `CLAUDE.local.md.example`
 
 ## Phase 1: Serving (cluster)
-- [ ] Create a uv environment for vLLM (pin a 0.27.x release). In a short GPU job, confirm that
-      torch reports compute capability `(12, 0)`.
+- [x] Create a uv environment for vLLM (vLLM 0.32.0, see D-012). In a short GPU job
+      (`cluster/check_env.py`), confirm that torch reports compute capability `(12, 0)`.
 - [ ] `scripts/download_models.sh`: on the login node, fetch the roster checkpoints into `$LLM_MODEL_DIR`.
 - [x] Create the roster file, the single source of truth (planned: `config/models.toml`, which
       Python can read with `tomllib` and no extra dependencies). It holds each model's name,
