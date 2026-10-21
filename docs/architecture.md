@@ -49,8 +49,8 @@ the source of truth once it exists.
 |---|---|---|---|---|
 | `qwen-main` | Qwen3.8-27B-FP8 + MTP head | 0.60 | 57 | ~30 GB weights; the rest is FP8 KV cache. Hybrid attention keeps the KV cache small, so full 262k context fits. |
 | `qwen-fast` | Qwen3.5-4B | 0.12 | 11.5 | Task model (titles, search queries, tags) and quick Q&A. Context capped at 32k. |
-| `embed` | Qwen3-Embedding-0.6B | 0.04 | 4 | RAG indexing and queries |
-| `rerank` | Qwen3-Reranker-0.6B | 0.04 | 4 | RAG precision; vLLM `/rerank` endpoint |
+| `embed` | Qwen3-Embedding-0.6B | 0.04 | 4 | RAG indexing and queries. Context 8k (chunks are short). |
+| `rerank` | Qwen3-Reranker-0.6B | 0.04 | 4 | RAG precision; vLLM `/rerank` endpoint. Context 8k. |
 | (headroom) | | ~0.20 | 19 | CUDA contexts (~0.5–1 GB per process), activations, safety margin |
 
 **On demand, as a separate job:** a larger coding model, for example Qwen3-Coder-Next

@@ -1,0 +1,75 @@
+# Model roster: the single source of truth for what the serving job runs.
+#
+# cluster/roster.py validates this file and builds each model's `vllm serve` command; the
+# launcher, the download script and (later) the gateway config all read it from there.
+# Weights live in $LLM_MODEL_DIR/<hf_repo>.
+#
+# Fields per [[model]]:
+#   name                    gateway alias, also vLLM's --served-model-name
+#   kind                    chat | embed | rerank
+#   hf_repo                 Hugging Face repository ID
+#   gpu_memory_utilization  vLLM's share of the GPU; enabled models must sum to <= 0.9
+#   max_model_len           context length in tokens
+#   order                   start order, lowest first (vLLM sizes its share at startup)
+#   enabled                 start this model in the serving job
+#   extra_args              further `vllm serve` flags. The launcher owns --host, --port,
+#                           --served-model-name, --gpu-memory-utilization and --max-model-len.
+#
+# Keep the budget table in docs/architecture.md in sync with the shares here.
+
+[[model]]
+name = "qwen-main"
+kind = "chat"
+hf_repo = "Qwen/Qwen3.8-27B-FP8"
+gpu_memory_utilization = 0.60
+max_model_len = 262144
+order = 1
+enabled = true
+extra_args = [
+    "--kv-cache-dtype", "fp8",
+    "--reasoning-parser", "qwen3",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser", "qwen3_coder",
+]
+
+# Task model and quick Q&A. Flags not yet tested on the pinned vLLM.
+[[model]]
+name = "qwen-fast"
+kind = "chat"
+hf_repo = "Qwen/Qwen3.5-4B"
+gpu_memory_utilization = 0.12
+max_model_len = 32768
+order = 2
+enabled = false
+extra_args = [
+    "--reasoning-parser", "qwen3",
+]
+
+# RAG chunks are short, so a small context keeps the share small. Flags not yet tested.
+[[model]]
+name = "embed"
+kind = "embed"
+hf_repo = "Qwen/Qwen3-Embedding-0.6B"
+gpu_memory_utilization = 0.04
+max_model_len = 8192
+order = 3
+enabled = false
+extra_args = [
+    "--runner", "pooling",
+]
+
+# The original Qwen3 reranker checkpoint is a causal LM; vLLM serves it as a classifier
+# through these overrides. Flags not yet tested.
+[[model]]
+name = "rerank"
+kind = "rerank"
+hf_repo = "Qwen/Qwen3-Reranker-0.6B"
+gpu_memory_utilization = 0.04
+max_model_len = 8192
+order = 4
+enabled = false
+extra_args = [
+    "--runner", "pooling",
+    "--hf-overrides",
+    '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}',
+]

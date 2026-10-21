@@ -10,7 +10,7 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - [ ] Create a uv environment for vLLM (pin a 0.27.x release). In a short GPU job, confirm that
       torch reports compute capability `(12, 0)`.
 - [ ] `scripts/download_models.sh`: on the login node, fetch the roster checkpoints into `$LLM_MODEL_DIR`.
-- [ ] Create the roster file, the single source of truth (planned: `config/models.toml`, which
+- [x] Create the roster file, the single source of truth (planned: `config/models.toml`, which
       Python can read with `tomllib` and no extra dependencies). It holds each model's name,
       checkpoint, GPU share, max context and extra flags.
 - [ ] `cluster/serve.sbatch` with the main model only:
