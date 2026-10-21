@@ -76,18 +76,52 @@ A GPU job measured outbound HTTPS working at the development site, so that reaso
 holds there. The decision stands on the reason above. Serving jobs still run with
 `HF_HUB_OFFLINE=1`, so a job never downloads or changes weights on its own.
 
-## D-006: MTP speculative decoding on the main model
-**Status:** to validate · 2026-10-21
+## D-006: MTP speculative decoding on the main model, with a BF16 KV cache
+**Status:** accepted · 2026-10-21
 
-**Decision.** Enable Qwen3.8's built-in multi-token-prediction head with
-`--speculative-config '{"method": "mtp", "num_speculative_tokens": 2}'`.
+**Decision.** Run the main model with Qwen3.8's multi-token-prediction head,
+`--speculative-config '{"method": "mtp", "num_speculative_tokens": 2}'`, and the default
+(`auto`, BF16) KV cache instead of FP8.
 
-**Evidence so far.** Community reports on other GPUs:
-- about 1.55× single-stream decode on vLLM 0.27.1 (RTX 5090)
-- +60% on llama.cpp (RTX 3090)
-- the output is not bit-identical to greedy decoding
+**Measured** on the RTX PRO 6000 with vLLM 0.32.0 (D-012), at a 0.60 GPU share,
+`--max-num-seqs 64`, in one benchmark job (`cluster/bench.sbatch` with
+`cluster/bench_mtp_kv.txt`). Every configuration used the same prompts:
+- **Decode:** a 512-token story with thinking off and the model card's instruct sampling
+  (temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5). Median of 3 runs.
+- **Aggregate:** 4 such streams at once.
+- **Acceptance:** from vLLM's `/metrics` counters over the single-stream runs; vLLM's own
+  "SpecDecoding metrics" log lines agree.
+- **Needle:** two code words at 25% and 75% of a 200,346-token document, answered greedily.
 
-**To do.** Measure tokens per second with and without MTP on our GPU and record the results here.
+| Configuration | KV cache, tokens | Full 262k contexts | Decode, 1 stream (tok/s) | Aggregate, 4 streams (tok/s) | Draft acceptance | Mean acceptance length | Needle, 200k prefill |
+|---|---|---|---|---|---|---|---|
+| a) FP8 KV, no MTP | 807,524 | 3.08 | 45.8 | 168.1 | – | – | both found, 54.0 s |
+| b) FP8 KV, MTP N=2 | 703,022 | 2.68 | 71.8 | 226.8 | 49.4% (0.65, 0.34) | 1.99 | both found, 56.2 s |
+| c) FP8 KV, MTP N=3 | 689,775 | 2.63 | 71.5 | 217.7 | 38.8% (0.69, 0.34, 0.14) | 2.17 | both found, 56.3 s |
+| **d) BF16 KV, MTP N=2** | **369,314** | **1.41** | **72.9** | **225.9** | **50.1% (0.66, 0.34)** | **2.00** | **both found, 46.8 s** |
+| d') BF16 KV, MTP N=3 | 366,084 | 1.40 | 71.8 | 224.1 | 38.4% (0.67, 0.33, 0.15) | 2.15 | both found, 46.9 s |
+
+The figures in brackets are per-position acceptance rates.
+
+**Why.**
+- MTP raises single-stream decode by 1.57× (45.8 to 71.8 tok/s) and 4-stream throughput by
+  1.35×. This is in line with the community's 1.55× on an RTX 5090.
+- N=3 adds nothing over N=2. Its third position is accepted only 14–15% of the time, so it
+  drafts more for the same speed, with lower 4-stream throughput and less KV room.
+- BF16 KV costs nothing in speed: decode is the same and prefill is ~20% faster (4,281 vs 3,562
+  tok/s at 200k). It still holds one full 262k context with 41% to spare. It also removes D-012's
+  open question about uncalibrated FP8 KV scales.
+- The cost is capacity: 369k tokens shared by all running requests, against 703k with FP8.
+  That's enough for a few people, but not for several long contexts at once. Switch back to FP8
+  KV if that becomes a limit.
+- MTP adds about 1 GiB of GPU memory (drafter weights and its KV) and 60–110 s of startup the
+  first time a configuration compiles. The output is not bit-identical to running without MTP.
+
+**Checked.** With MTP, `--max-num-seqs 64` still fits. The shared block pool holds 461 blocks
+with BF16 KV and MTP N=2 (439 with FP8), and every running sequence needs one.
+
+**Rejected.** FP8 KV with MTP N=2 (b): it has twice the context capacity, but the scales are
+uncalibrated and prefill is slower. MTP N=3 (c, d'): no gain.
 
 ## D-007: RAG stack is Docling, Qwen3-Embedding-0.6B and Qwen3-Reranker-0.6B
 **Status:** to validate · 2026-10-21
@@ -202,9 +236,9 @@ FlashInfer JIT kernel compiles and runs.
 | Decode | 46 tok/s, single stream (512 tokens, thinking off) |
 | Prefill | 51,177-token prompt in 6.9 s (~7,400 tok/s) |
 
-**Open.** The checkpoint has no FP8 KV scales, so vLLM uses 1.0 and warns about possible
-accuracy loss. The phase 5 evals should compare `--kv-cache-dtype fp8` with `auto` before this
-counts as settled.
+**Open (resolved by D-006).** The checkpoint has no FP8 KV scales, so vLLM uses 1.0 and warns
+about possible accuracy loss. D-006 moved the main model to the BF16 KV cache, so this no longer
+applies; it would again if FP8 KV came back.
 
 **Rejected.**
 - vLLM 0.27.1: proven on this GPU class by others, with the same torch. It stays the fallback if

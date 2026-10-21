@@ -25,10 +25,12 @@ gpu_memory_utilization = 0.60
 max_model_len = 262144
 order = 1
 enabled = true
+# --kv-cache-dtype auto (BF16) and MTP with 2 draft tokens: see D-006.
 # --max-num-seqs: each running sequence needs one linear-attention state block. vLLM 0.32
-# defaults to 1024 sequences, but a 0.60 share holds about 500 blocks, and startup fails.
+# defaults to 1024 sequences, but a 0.60 share holds about 460 blocks, and startup fails.
 extra_args = [
-    "--kv-cache-dtype", "fp8",
+    "--kv-cache-dtype", "auto",
+    "--speculative-config", '{"method": "mtp", "num_speculative_tokens": 2}',
     "--max-num-seqs", "64",
     "--reasoning-parser", "qwen3",
     "--enable-auto-tool-choice",

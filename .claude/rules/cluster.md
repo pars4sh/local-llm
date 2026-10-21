@@ -29,9 +29,10 @@ paths:
   with a patched build, record that in `docs/decisions.md`.
 - Don't rely on sleep-mode hot-swapping unless you've tested it on the pinned version. Upstream
   reported it broken in v0.14+ (vllm#32714). Serve extra models as separate jobs instead.
-- Starting flags for the Qwen3.8 main model (check them against the vLLM recipe for the pinned version):
-  `--reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder --kv-cache-dtype fp8`,
-  plus MTP: `--speculative-config '{"method": "mtp", "num_speculative_tokens": 2}'`.
+- Flags for the Qwen3.8 main model live in `config/models.toml` (measured in D-006): BF16 KV
+  (`--kv-cache-dtype auto`), MTP with 2 draft tokens, and
+  `--reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder`.
+  `cluster/bench.sbatch` reruns the comparison after a version change.
 - Hybrid models (linear plus full attention, like Qwen3.8) need one state block per running
   sequence. Set `--max-num-seqs` below the block count that vLLM logs, or startup fails. The
   main model uses 64 (see D-012).

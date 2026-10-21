@@ -20,7 +20,7 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
   - offline Hugging Face flags
 - [x] `cluster/smoke_test.sh`: text, image, tool call, thinking on and off, a ~50k-token prompt,
       single-stream decode speed. (Embeddings and rerank checks come with those models.)
-- [ ] Turn on MTP. Measure tokens per second with and without it, and record the numbers in D-006.
+- [x] Turn on MTP. Measure tokens per second with and without it, and record the numbers in D-006.
 - [ ] Add the fast, embed and rerank models. Start them in sequence, with a health wait between each.
 - [ ] LiteLLM gateway: config generated from the roster, a master key and one key per client.
 - [ ] Resubmit automatically before `SLURM_TIME` runs out (opt-in: `LLM_AUTO_RESUBMIT=1`).
