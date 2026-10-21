@@ -94,8 +94,13 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 
 ## Open questions
 Ask the user about these; don't guess.
-1. Do GPU compute nodes have outbound internet access? This affects downloads and where search can run.
+1. ~~Do GPU compute nodes have outbound internet access?~~ **Answered (measured in a GPU job):**
+   yes, outbound HTTPS works at the development site. Downloads still happen on the login node,
+   and jobs keep `HF_HUB_OFFLINE=1`, so a job never depends on the Hub. Other sites may differ.
 2. Can GPU jobs run longer than the 8 h limit, through a reservation or another partition? (A question for the admins.)
-3. Is there node-local scratch disk on the GPU node, and how large is it? (Affects weight staging.)
+3. ~~Is there node-local scratch disk on the GPU node, and how large is it?~~ **Answered (measured
+   in a GPU job):** no dedicated local disk at the development site. The only fast local storage
+   is RAM-backed tmpfs (about half the node's RAM), so staging weights there costs host RAM.
+   Phase 1 measures the load time from the shared filesystem before turning staging on.
 4. Is Docker Desktop or OrbStack installed on the laptop?
 5. Which license should the published repo use?

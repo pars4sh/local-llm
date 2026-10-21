@@ -35,7 +35,7 @@ paths:
 - Each vLLM process binds to `127.0.0.1`. Only the gateway binds to all interfaces, and it requires a key.
 
 ## Models and downloads
-- Compute nodes may have no internet (this is an open question). So:
+- Compute nodes may have no internet at some sites. So, everywhere:
   - download on the login node, into `$LLM_MODEL_DIR`
   - run jobs with `HF_HUB_OFFLINE=1`
 - Never write weights inside the repo.

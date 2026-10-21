@@ -38,7 +38,7 @@ The system has three layers, and each does one job:
 
 The UI services live on the laptop for two reasons:
 - The GPU job ends at the partition's wall-time limit.
-- Compute nodes may not have internet access (open question).
+- Compute nodes may not have internet access at every site.
 
 ## Model roster and GPU budget
 
