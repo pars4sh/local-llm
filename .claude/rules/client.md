@@ -6,10 +6,14 @@ paths:
 # Laptop-side code (Docker, Open WebUI, tunnel)
 
 ## Docker
-- Target Docker on macOS (Docker Desktop or OrbStack) and assume arm64.
+- Target Docker Desktop on macOS and assume arm64, but keep the stack working on Colima and Linux.
   - Every image needs an arm64 build.
   - Don't use `network_mode: host`.
-  - Containers reach the SSH tunnel at `host.docker.internal`.
+  - Containers reach the SSH tunnel at `host.docker.internal`. Give every service that does
+    `extra_hosts: ["host.docker.internal:host-gateway"]`. Docker Desktop resolves the name by
+    itself; Colima and Linux need the entry.
+  - On Linux, `host-gateway` is the Docker bridge address, so a tunnel bound only to `127.0.0.1`
+    is not reachable from containers. `client/tunnel.sh` has to handle this; not decided yet.
 - Pin image tags; never use `:latest`. When you bump a tag, note it in `docs/decisions.md`.
 - Publish ports on `127.0.0.1` only (for example `"127.0.0.1:3000:8080"`). Nothing should be
   reachable from the local network.

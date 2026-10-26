@@ -40,6 +40,8 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
   - pinned tags
   - ports bound to `127.0.0.1`
   - named volumes
+  - `extra_hosts: host.docker.internal:host-gateway` on every service that reaches the tunnel,
+    so the stack also works on Colima and Linux
 - [ ] `client/tunnel.sh`:
   - finds the node and port from the newest run file
   - opens the tunnel
@@ -110,5 +112,7 @@ Ask the user about these; don't guess.
    in a GPU job):** no dedicated local disk at the development site. The only fast local storage
    is RAM-backed tmpfs (about half the node's RAM), so staging weights there costs host RAM.
    Phase 1 measures the load time from the shared filesystem before turning staging on.
-4. Is Docker Desktop or OrbStack installed on the laptop?
+4. ~~Is Docker Desktop or OrbStack installed on the laptop?~~ **Answered:** Docker Desktop
+   4.97.0 on Apple Silicon (arm64), Engine 29.9.2, Compose v5.6.1. The compose file must also
+   work on Colima and Linux (see `.claude/rules/client.md`).
 5. Which license should the published repo use?
