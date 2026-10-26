@@ -8,6 +8,7 @@ Usage:
     roster.py validate
     roster.py list [--all]                  names in start order (enabled only by default)
     roster.py repos [--all]                 "<name> <kind> <hf_repo>" lines in start order
+    roster.py client-env                    the laptop client's model per role, as KEY=VALUE
     roster.py command NAME --port N [--model-dir DIR] [--vllm PATH]
 """
 
@@ -45,6 +46,13 @@ OWNED_FLAGS = (
     "--gpu-memory-utilization",
     "--max-model-len",
 )
+# [client] keys: the model the laptop client uses for each role. Key -> (env var, kind).
+CLIENT_ROLES = {
+    "default_model": ("LLM_DEFAULT_MODEL", "chat"),
+    "task_model": ("LLM_TASK_MODEL", "chat"),
+    "embedding_model": ("LLM_EMBED_MODEL", "embed"),
+    "reranking_model": ("LLM_RERANK_MODEL", "rerank"),
+}
 
 
 class RosterError(Exception):
@@ -137,7 +145,7 @@ def load(path: Path | None = None) -> list[Model]:
         raise RosterError(f"{path}: {e}") from e
 
     errors: list[str] = []
-    unknown_top = [k for k in data if k != "model"]
+    unknown_top = [k for k in data if k not in ("model", "client")]
     if unknown_top:
         errors.append(f"unknown top-level keys: {', '.join(unknown_top)}")
     entries = data.get("model", [])
@@ -159,9 +167,38 @@ def load(path: Path | None = None) -> list[Model]:
             f"enabled gpu_memory_utilization shares sum to {total:.2f} "
             f"(limit {MAX_TOTAL_SHARE})"
         )
+    _check_client(data.get("client", {}), models, errors)
     if errors:
         raise RosterError(f"{path}:\n  " + "\n  ".join(errors))
     return sorted(models, key=lambda m: m.order)
+
+
+def _check_client(client: object, models: list[Model], errors: list[str]) -> None:
+    if not isinstance(client, dict):
+        errors.append("[client] must be a table")
+        return
+    missing = [k for k in CLIENT_ROLES if k not in client]
+    unknown = [k for k in client if k not in CLIENT_ROLES]
+    if missing:
+        errors.append(f"[client]: missing keys: {', '.join(missing)}")
+    if unknown:
+        errors.append(f"[client]: unknown keys: {', '.join(unknown)}")
+    by_name = {m.name: m for m in models}
+    for key, name in client.items():
+        if key not in CLIENT_ROLES:
+            continue
+        kind = CLIENT_ROLES[key][1]
+        m = by_name.get(name) if isinstance(name, str) else None
+        if m is None or not m.enabled or m.kind != kind:
+            errors.append(f"[client] {key}: must name an enabled {kind} model")
+
+
+def client_env(path: Path | None = None) -> dict[str, str]:
+    """The models the laptop client uses for each role, as environment variables."""
+    path = path or roster_path()
+    load(path)
+    client = tomllib.loads(path.read_text())["client"]
+    return {CLIENT_ROLES[k][0]: client[k] for k in CLIENT_ROLES}
 
 
 def enabled(models: list[Model]) -> list[Model]:
@@ -208,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("list", "repos"):
         s = sub.add_parser(name)
         s.add_argument("--all", action="store_true", help="include disabled models")
+    sub.add_parser("client-env", help="print the client's model per role as KEY=VALUE")
     c = sub.add_parser("command", help="print the vllm serve command for a model")
     c.add_argument("name")
     c.add_argument("--port", type=int, required=True)
@@ -231,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     m.name if args.cmd == "list" else f"{m.name} {m.kind} {m.hf_repo}"
                 )
+        elif args.cmd == "client-env":
+            for key, value in client_env().items():
+                print(f"{key}={value}")
         elif args.cmd == "command":
             if not args.model_dir:
                 raise RosterError("set LLM_MODEL_DIR or pass --model-dir")

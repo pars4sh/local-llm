@@ -17,6 +17,15 @@
 #                           Paths are relative to the repository root.
 #
 # Keep the budget table in docs/architecture.md in sync with the shares here.
+#
+# [client] names the model the laptop client (Open WebUI) uses for each role. Each must be an
+# enabled model of the right kind; client/compose.sh reads them with `roster.py client-env`.
+
+[client]
+default_model = "qwen-main"     # chat: preselected in new chats
+task_model = "qwen-fast"        # chat: titles, tags, search queries
+embedding_model = "embed"       # embed: RAG vectors
+reranking_model = "rerank"      # rerank: RAG rerank
 
 [[model]]
 name = "qwen-main"
