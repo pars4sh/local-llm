@@ -67,7 +67,7 @@ Check which machine you're on before running anything:
 - Shell: `shellcheck` and `bash -n` on every changed `.sh` or `.sbatch` file.
 - Python: `ruff check` and `ruff format --check`.
 - Gateway: `uv run --project gateway pytest gateway/tests` after any change in `gateway/` or a LiteLLM upgrade.
-- Compose (laptop only): `docker compose -f client/compose.yaml config`.
+- Compose (laptop only): `client/compose.sh config --quiet`.
 - Serving: run `cluster/smoke_test.sh` against a live job. It covers gateway auth, text, an image,
   a tool call, thinking on and off, a ~50k-token prompt, embeddings and rerank.
 - Model or version changes: run the eval set in `evals/` and compare with the last recorded result.

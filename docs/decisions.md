@@ -347,3 +347,55 @@ receive):
   unauthenticated routes open, and its checks expect database records.
 - Starlette middleware added to LiteLLM's app from inside the config: LiteLLM loads the config
   after the app has started, when middleware can no longer be added.
+
+## D-014: Laptop stack: pinned images, settings from compose, sandbox network
+**Status:** to validate · 2026-10-26 (passes its backend checks; browser tests pending)
+
+**Decision.** `client/compose.yaml` runs four services, each pinned to a release that was at
+least a week old when chosen (the same reason as LiteLLM in D-013: deliberate upgrades, not
+whatever shipped yesterday). Every image has an arm64 build (checked with
+`docker buildx imagetools inspect`).
+
+| Service | Image | Released |
+|---|---|---|
+| Open WebUI | `ghcr.io/open-webui/open-webui:v0.12.3` | 2026-10-16 |
+| SearXNG | `searxng/searxng:2026.10.17-decdfa6f7` | 2026-10-17 |
+| Docling | `ghcr.io/docling-project/docling-serve-cpu:v1.37.0` | 2026-10-13 |
+| Open Terminal | `ghcr.io/open-webui/open-terminal:0.14.2` | 2026-10-18 |
+
+- **Settings come from compose.** `ENABLE_PERSISTENT_CONFIG=false`, so the environment applies on
+  every start and a fresh install is reproducible. Admin-panel changes to the same settings
+  don't survive a restart. Per-model settings (stored in the database) are unaffected.
+- **Model names come from the roster.** A `[client]` table in `config/models.toml` names the
+  default, task, embedding and reranking models; `cluster/roster.py client-env` prints them and
+  `client/compose.sh` passes them to compose. The wrapper also points compose at the repository's
+  `.env` (compose would otherwise look in `client/`).
+- **Only Open WebUI publishes a port** (`127.0.0.1`). It reaches SearXNG, Docling and Open Terminal
+  by service name; Open Terminal is a system connection proxied by the Open WebUI backend.
+- **Sandbox network.** Docling and Open Terminal are only on an `internal: true` network, so they
+  have no route out (checked: DNS and HTTPS fail from both). This keeps Open Terminal from reading
+  the web (D-008) and from sending data out. Docling ships its models in the image and converts
+  offline (a 15-page paper with tables: 18 s on the M-series CPU).
+- **Open Terminal** is the full image (Python, data-science libraries, LibreOffice) rather than
+  `slim`, because the Code preset runs code. Its home directory is `$OPEN_TERMINAL_DIR`.
+- **Native function calling** is Open WebUI 0.12's default for every model, so nothing is set.
+- **Thinking.** The gateway streams `reasoning_content` deltas (checked through the tunnel), which
+  Open WebUI 0.12 renders as a collapsible reasoning block. No reasoning-tag settings needed.
+
+**Tunnel.** `client/tunnel.sh` keeps one SSH control connection to the login host and adds or
+cancels the forward over it (`ssh -O forward/cancel`). Every `TUNNEL_POLL` seconds it picks the
+newest run file that has a gateway port and whose job `squeue` reports as running, so stale run
+files from killed jobs are skipped. Tested against job 4732: a killed connection, a run file
+pointing at a new port, the return to the old one, and no run file at all.
+
+On Linux, containers reach `host-gateway` at the Docker bridge address, not `127.0.0.1`.
+`TUNNEL_BIND_ADDRS` (default `127.0.0.1`) takes extra listen addresses, for example the bridge
+address. Untested on Linux.
+
+**Rejected.**
+- `ENABLE_PERSISTENT_CONFIG=true` (the default): the environment would seed only the first start,
+  and later changes in compose would be silently ignored.
+- Open Terminal's own egress firewall (`OPEN_TERMINAL_ALLOWED_DOMAINS=""`): needs `NET_ADMIN`
+  at start; the internal network gives the same result without extra privileges.
+- Publishing SearXNG, Docling or Open Terminal ports: nothing on the laptop needs them directly.
+- Model names typed into `compose.yaml` or `.env`: a second place to keep in sync with the roster.

@@ -1,0 +1,24 @@
+# SearXNG settings for the local stack. Only differences from SearXNG's defaults are listed.
+# The secret key comes from SEARXNG_SECRET in .env (SearXNG reads that variable itself).
+use_default_settings: true
+
+general:
+  instance_name: local-llm search
+
+server:
+  # Placeholder; SEARXNG_SECRET overrides it. SearXNG refuses to start with its stock value.
+  secret_key: "set-by-SEARXNG_SECRET"
+  # Only Open WebUI on this laptop queries it, so the bot limiter (which needs Valkey) is off.
+  limiter: false
+  image_proxy: false
+  public_instance: false
+
+search:
+  safe_search: 0
+  # Open WebUI reads results as JSON.
+  formats:
+    - html
+    - json
+
+ui:
+  query_in_title: false

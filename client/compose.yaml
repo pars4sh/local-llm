@@ -1,0 +1,106 @@
+# Laptop stack: Open WebUI and its helper services. Run it through client/compose.sh, which
+# passes the repository's .env and the roster's client models (cluster/roster.py client-env).
+#
+# Only Open WebUI publishes a port, on 127.0.0.1. It reaches the gateway through the SSH tunnel
+# (client/tunnel.sh) at host.docker.internal. Docling and Open Terminal sit on an internal
+# network with no route out: Docling only converts uploads, and Open Terminal must not read
+# the web (D-008).
+name: local-llm
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.12.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OPENWEBUI_PORT:-3000}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+    networks:
+      - default
+      - sandbox
+    depends_on:
+      - searxng
+      - docling
+      - open-terminal
+    environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}
+      # The settings below are the source of truth: they apply on every start, and changes made
+      # in the admin panel to them don't survive a restart. See client/README.md.
+      ENABLE_PERSISTENT_CONFIG: "false"
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+
+      # Models: everything goes through the gateway.
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URL: http://host.docker.internal:${GATEWAY_LOCAL_PORT:-4000}/v1
+      OPENAI_API_KEY: ${GATEWAY_API_KEY:?set GATEWAY_API_KEY in .env (scripts/new_client_key.sh on the cluster)}
+      DEFAULT_MODELS: ${LLM_DEFAULT_MODEL:?run through client/compose.sh}
+      TASK_MODEL_EXTERNAL: ${LLM_TASK_MODEL:?run through client/compose.sh}
+
+      # RAG: Docling extracts, the gateway embeds and reranks, hybrid search (BM25 + vectors).
+      CONTENT_EXTRACTION_ENGINE: docling
+      DOCLING_SERVER_URL: http://docling:5001
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_EMBEDDING_MODEL: ${LLM_EMBED_MODEL:?run through client/compose.sh}
+      RAG_OPENAI_API_BASE_URL: http://host.docker.internal:${GATEWAY_LOCAL_PORT:-4000}/v1
+      RAG_OPENAI_API_KEY: ${GATEWAY_API_KEY}
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_RERANKING_ENGINE: external
+      RAG_RERANKING_MODEL: ${LLM_RERANK_MODEL:?run through client/compose.sh}
+      RAG_EXTERNAL_RERANKER_URL: http://host.docker.internal:${GATEWAY_LOCAL_PORT:-4000}/v1/rerank
+      RAG_EXTERNAL_RERANKER_API_KEY: ${GATEWAY_API_KEY}
+
+      # Web search through SearXNG.
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>
+      WEB_SEARCH_RESULT_COUNT: "5"
+
+      # Open Terminal, proxied through the Open WebUI backend (the browser never talks to it).
+      TERMINAL_SERVER_CONNECTIONS: >-
+        [{"id": "sandbox", "name": "Sandbox", "enabled": true,
+        "url": "http://open-terminal:8000", "auth_type": "bearer",
+        "key": "${OPEN_TERMINAL_API_KEY:?set OPEN_TERMINAL_API_KEY in .env}"}]
+
+  searxng:
+    image: searxng/searxng:2026.10.17-decdfa6f7
+    restart: unless-stopped
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
+      SEARXNG_BASE_URL: http://searxng:8080/
+
+  docling:
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.37.0
+    restart: unless-stopped
+    networks:
+      - sandbox
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+
+  open-terminal:
+    image: ghcr.io/open-webui/open-terminal:0.14.2
+    restart: unless-stopped
+    networks:
+      - sandbox
+    volumes:
+      # The one host folder the assistant may read and write; it is the container user's home.
+      - ${OPEN_TERMINAL_DIR:?set OPEN_TERMINAL_DIR in .env}:/home/user
+    environment:
+      OPEN_TERMINAL_API_KEY: ${OPEN_TERMINAL_API_KEY}
+
+networks:
+  default: {}
+  # No route out of this network: only Open WebUI, Docling and Open Terminal are on it.
+  sandbox:
+    internal: true
+
+volumes:
+  open-webui:
+  searxng-cache:

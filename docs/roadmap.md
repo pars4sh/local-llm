@@ -36,17 +36,18 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 ## Phase 2: Laptop client
 - [x] First, rerun `cluster/smoke_test.sh` on the GPU with the allowlist gateway (D-013).
       Passed 12/12 with all four models on 2026-10-26 (blocked on 2026-10-22: GPU nodes drained).
-- [ ] `client/compose.yaml` with Open WebUI, SearXNG, Docling and Open Terminal:
+- [x] `client/compose.yaml` with Open WebUI, SearXNG, Docling and Open Terminal (D-014):
   - pinned tags
   - ports bound to `127.0.0.1`
   - named volumes
   - `extra_hosts: host.docker.internal:host-gateway` on every service that reaches the tunnel,
     so the stack also works on Colima and Linux
-- [ ] `client/tunnel.sh`:
+- [x] `client/tunnel.sh`:
   - finds the node and port from the newest run file
   - opens the tunnel
   - reconnects when the job moves
-- [ ] Open WebUI wiring:
+- [ ] Open WebUI wiring (configured in `client/compose.yaml`; every backend path checked from the
+      container on 2026-10-26, browser tests pending):
   - connection to the gateway
   - task model set to `qwen-fast`
   - embeddings and reranking through the gateway
