@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+# One command for the whole setup, run on the laptop: the serving job on the cluster, the SSH
+# tunnel and the Docker stack.
+#
+# Usage: llm up [--no-open]    reuse my serving job or submit one, wait until it serves, start
+#                              the tunnel and the containers, then open Open WebUI
+#        llm down [--keep-ui]  cancel my serving job, stop the tunnel and the containers
+#                              (--keep-ui: leave Open WebUI running to read old chats)
+#        llm status            job, tunnel, containers and gateway at a glance
+#        llm backup            back up the Open WebUI volume to $BACKUP_DIR (keeps the last 8)
+#
+# Install: ln -s "$PWD/client/llm" ~/.local/bin/llm   (any directory on PATH)
+# Settings come from the repository's .env; see .env.example and client/README.md.
+# Written for macOS's /bin/bash 3.2: no associative arrays, no mapfile.
+# shellcheck disable=SC2016 # remote scripts are single-quoted on purpose: they expand on the cluster
+set -euo pipefail
+
+# Find the repository through the install symlink.
+src=${BASH_SOURCE[0]}
+while [[ -L $src ]]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  [[ $src == /* ]] || src=$dir/$src
+done
+REPO=$(cd -P "$(dirname "$src")/.." && pwd)
+# shellcheck source=scripts/env.sh
+source "$REPO/scripts/env.sh"
+load_env "$REPO/.env"
+
+# The serving job's name, as set in serve.sbatch; only jobs with this name are touched.
+JOB_NAME=$(sed -n 's/^#SBATCH --job-name=//p' "$REPO/cluster/serve.sbatch")
+[[ -n $JOB_NAME ]] || die "no --job-name in cluster/serve.sbatch"
+PROJECT=$(sed -n 's/^name: *//p' "$REPO/client/compose.yaml")
+BACKUP_IMAGE=alpine:3.24.2
+BACKUPS_KEPT=8
+
+host=${CLUSTER_SSH_HOST:-}
+gw_port=${GATEWAY_LOCAL_PORT:-4000}
+ui_port=${OPENWEBUI_PORT:-3000}
+queue_timeout=${LLM_QUEUE_TIMEOUT:-1800}
+start_timeout=${LLM_START_TIMEOUT:-900}
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/local-llm
+tunnel_pid_file=$state_dir/tunnel.pid
+tunnel_log=$state_dir/tunnel.log
+mkdir -p "$state_dir"
+
+# One SSH connection, reused by every remote command for two minutes.
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto
+  -o "ControlPath=$state_dir/ssh-%C" -o ControlPersist=120)
+
+tty=0
+[[ -t 1 ]] && tty=1
+
+# ---------------------------------------------------------------- helpers
+
+need_host() {
+  [[ -n $host ]] || die "CLUSTER_SSH_HOST is not set in .env"
+}
+
+# remote SCRIPT: run SCRIPT under bash on the login host (its login shell may be tcsh). The
+# script starts with d=<run dir> and name=<job name>.
+remote() {
+  local d
+  d='$HOME/.local-llm'
+  if [[ -n ${CLUSTER_RUN_DIR:-} ]]; then d=$(printf %q "$CLUSTER_RUN_DIR"); fi
+  printf 'd=%s\nname=%q\n%s\n' "$d" "$JOB_NAME" "$1" | ssh "${ssh_opts[@]}" "$host" bash -s
+}
+
+ssh_ok() { remote 'true' 2>/dev/null; }
+check_ssh() {
+  ssh_ok || die "can't reach $host over ssh (a key login without a prompt is required)"
+}
+
+fmt_secs() { printf '%d:%02d' $(($1 / 60)) $(($1 % 60)); }
+
+# progress MSG SECS: one line per state; on a terminal the line keeps a running timer.
+last_msg=""
+progress() {
+  if [[ $1 != "$last_msg" ]]; then
+    if ((tty)) && [[ -n $last_msg ]]; then echo; fi
+    ((tty)) || echo "$1"
+    last_msg=$1
+  fi
+  if ((tty)); then printf '\r\033[K%s  %s' "$1" "$(fmt_secs "$2")"; fi
+}
+progress_end() {
+  if ((tty)) && [[ -n $last_msg ]]; then echo; fi
+  last_msg=""
+}
+
+# with_key CURL_ARGS...: curl with the gateway key in a header that never shows in `ps`.
+with_key() {
+  curl -H @<(printf 'Authorization: Bearer %s\n' "${GATEWAY_API_KEY:-}") "$@"
+}
+
+gateway_alive() { curl -fs -m 5 -o /dev/null "http://127.0.0.1:$gw_port/health/liveliness"; }
+
+# Prints the model names, comma-separated, if the gateway lists them with our key.
+gateway_models() {
+  with_key -fs -m 20 "http://127.0.0.1:$gw_port/v1/models" |
+    grep -o '"id": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | paste -sd, - | sed 's/,/, /g'
+}
+
+# my_jobs: "<id>|<state>|<node>|<time left>|<reason>" for my active serving jobs, running first.
+my_jobs() {
+  remote 'squeue -h -u "$USER" -n "$name" -t PD,CF,R -o "%i|%T|%N|%L|%r" | sort -t"|" -k2,2r'
+}
+
+# ---------------------------------------------------------------- tunnel
+
+tunnel_pid() {
+  local pid
+  [[ -f $tunnel_pid_file ]] || return 1
+  pid=$(cat "$tunnel_pid_file")
+  if [[ -n $pid ]] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'tunnel\.sh'; then
+    echo "$pid"
+  else
+    rm -f "$tunnel_pid_file"
+    return 1
+  fi
+}
+
+start_tunnel() {
+  local pid
+  if pid=$(tunnel_pid); then
+    echo "tunnel already running (pid $pid)"
+  elif nc -z 127.0.0.1 "$gw_port" 2>/dev/null; then
+    gateway_alive || die "127.0.0.1:$gw_port is in use by something other than the tunnel"
+    echo "tunnel already running (started outside llm)"
+  else
+    # Own process group (set -m), so Ctrl-C in this terminal doesn't reach it later.
+    set -m
+    nohup "$REPO/client/tunnel.sh" </dev/null >>"$tunnel_log" 2>&1 &
+    pid=$!
+    set +m
+    echo "$pid" >"$tunnel_pid_file"
+    echo "tunnel started (pid $pid, log $tunnel_log)"
+  fi
+  # A running tunnel moves to a new job within TUNNEL_POLL seconds.
+  local t0=$SECONDS limit=$((${TUNNEL_POLL:-30} + 30))
+  until gateway_alive; do
+    if ((SECONDS - t0 > limit)); then
+      progress_end
+      die "the gateway doesn't answer through the tunnel; see $tunnel_log"
+    fi
+    progress "waiting for the tunnel" $((SECONDS - t0))
+    sleep 2
+  done
+  progress_end
+}
+
+stop_tunnel() {
+  local pid
+  if pid=$(tunnel_pid); then
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      ps -p "$pid" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    rm -f "$tunnel_pid_file"
+    echo "tunnel stopped"
+  elif nc -z 127.0.0.1 "$gw_port" 2>/dev/null; then
+    echo "tunnel on 127.0.0.1:$gw_port was not started by llm; left running"
+  else
+    echo "tunnel not running"
+  fi
+}
+
+# ---------------------------------------------------------------- docker
+
+docker_up() { docker info >/dev/null 2>&1; }
+
+ensure_docker() {
+  docker_up && return 0
+  command -v open >/dev/null || die "Docker is not running"
+  open -a Docker
+  local t0=$SECONDS
+  until docker_up; do
+    ((SECONDS - t0 < 120)) || die "Docker did not start within 2 minutes"
+    progress "starting Docker" $((SECONDS - t0))
+    sleep 2
+  done
+  progress_end
+}
+
+compose() { "$REPO/client/compose.sh" "$@"; }
+
+start_stack() {
+  ensure_docker
+  local out
+  if ! out=$(compose up -d --quiet-pull --wait --wait-timeout 300 2>&1); then
+    echo "$out" >&2
+    die "the containers did not come up"
+  fi
+  echo "containers up"
+}
+
+# ---------------------------------------------------------------- job
+
+submit_job() {
+  [[ -n ${CLUSTER_REPO_DIR:-} ]] || die "CLUSTER_REPO_DIR is not set in .env"
+  local out
+  out=$(remote "cd $(printf %q "$CLUSTER_REPO_DIR") && cluster/submit.sh --parsable" 2>&1) ||
+    die "submit failed: $out"
+  out=${out%%;*}
+  [[ $out =~ ^[0-9]+$ ]] || die "unexpected answer from sbatch: $out"
+  echo "$out"
+}
+
+job_failed() {
+  local job=$1
+  progress_end
+  echo "job $job failed; last lines of its log:" >&2
+  remote "tail -n 20 \"\$d/logs/slurm-$job.out\" 2>/dev/null || echo '(no log yet)'" | sed 's/^/  /' >&2
+  die "job $job did not come up (log: <run dir>/logs/slurm-$job.out on the cluster)"
+}
+
+# wait_ready JOB: follow the job from the queue to a gateway that answers on the node.
+wait_ready() {
+  local job=$1 out state node left reason line t0=$SECONDS phase_t0=$SECONDS phase=""
+  local ready=0 gw_node="" rf_port=""
+  while ((!ready)); do
+    out=$(remote "
+      s=\$(squeue -h -j $job -o '%T|%N|%L|%r' 2>/dev/null || true)
+      echo \"S|\$s\"
+      f=\$d/run/$job.env
+      if [ -f \"\$f\" ]; then
+        node=\$(sed -n 's/^LLM_NODE=//p' \"\$f\"); port=\$(sed -n 's/^LLM_GATEWAY_PORT=//p' \"\$f\")
+        echo \"R|\$node|\$port\"
+        curl -fs -m 5 -o /dev/null \"http://\$node:\$port/health/liveliness\" && echo H
+      fi
+      true") || {
+      sleep 5
+      continue
+    }
+    state="" node="" gw_node="" rf_port=""
+    while IFS= read -r line; do
+      case $line in
+        S\|*) IFS='|' read -r _ state node left reason <<<"$line" ;;
+        R\|*) IFS='|' read -r _ gw_node rf_port <<<"$line" ;;
+        H) ready=1 ;;
+      esac
+    done <<<"$out"
+
+    case $state in
+      "") job_failed "$job" ;;
+      PENDING)
+        [[ $phase == pending ]] || phase_t0=$SECONDS
+        phase=pending
+        if ((SECONDS - phase_t0 > queue_timeout)); then
+          progress_end
+          die "job $job is still pending after $(fmt_secs "$queue_timeout")$reason; left in the queue: rerun llm up to keep waiting, or llm down"
+        fi
+        case $reason in None | "") reason="" ;; *) reason=" ($reason)" ;; esac
+        progress "job $job: pending in the queue$reason" $((SECONDS - phase_t0))
+        ;;
+      *)
+        [[ $phase == starting ]] || phase_t0=$SECONDS
+        phase=starting
+        ((ready)) && break
+        if ((SECONDS - phase_t0 > start_timeout)); then
+          progress_end
+          echo "job $job: not ready after $(fmt_secs "$start_timeout"); last lines of its log:" >&2
+          remote "tail -n 20 \"\$d/logs/slurm-$job.out\"" | sed 's/^/  /' >&2
+          die "job $job is still running; llm down cancels it"
+        fi
+        progress "job $job: starting on $node" $((SECONDS - phase_t0))
+        ;;
+    esac
+    ((ready)) || sleep 5
+  done
+  progress_end
+  echo "job $job: ready on $gw_node:$rf_port (took $(fmt_secs $((SECONDS - t0))))"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_up() {
+  local open_browser=1 job line
+  case ${1:-} in
+    --no-open) open_browser=0 ;;
+    "") ;;
+    *) die "usage: llm up [--no-open]" ;;
+  esac
+  need_host
+  check_ssh
+
+  line=$(my_jobs | head -n 1)
+  if [[ -n $line ]]; then
+    IFS='|' read -r job state _ <<<"$line"
+    echo "reusing job $job ($(echo "$state" | tr '[:upper:]' '[:lower:]'))"
+  else
+    job=$(submit_job)
+    echo "submitted job $job"
+  fi
+  wait_ready "$job"
+  start_tunnel
+  start_stack
+
+  local models
+  models=$(gateway_models) || true
+  [[ -n $models ]] || die "the gateway doesn't list models with GATEWAY_API_KEY (wrong key?)"
+  echo "models: $models"
+  local t0=$SECONDS
+  until curl -fs -m 2 -o /dev/null "http://127.0.0.1:$ui_port/health"; do
+    ((SECONDS - t0 < 120)) || die "Open WebUI doesn't answer on 127.0.0.1:$ui_port"
+    sleep 2
+  done
+  echo "Ready: http://localhost:$ui_port"
+  if ((open_browser)) && command -v open >/dev/null; then open "http://localhost:$ui_port"; fi
+}
+
+cmd_down() {
+  local keep_ui=0 jobs
+  case ${1:-} in
+    --keep-ui) keep_ui=1 ;;
+    "") ;;
+    *) die "usage: llm down [--keep-ui]" ;;
+  esac
+  need_host
+  if ! ssh_ok; then
+    echo "can't reach $host; serving job left alone" >&2
+  else
+    jobs=$(remote 'ids=$(squeue -h -u "$USER" -n "$name" -o %i | tr "\n" " ")
+      if [ -n "$ids" ]; then
+        scancel $ids
+        for i in $(seq 30); do [ -z "$(squeue -h -u "$USER" -n "$name" -o %i)" ] && break; sleep 2; done
+      fi
+      echo $ids')
+    if [[ -n $jobs ]]; then echo "cancelled job $jobs"; else echo "no serving job"; fi
+  fi
+  stop_tunnel
+  if ! docker_up; then
+    echo "Docker not running; containers left alone"
+  elif ((keep_ui)); then
+    compose stop searxng docling open-terminal >/dev/null 2>&1
+    echo "containers stopped except Open WebUI (http://localhost:$ui_port)"
+  else
+    compose stop >/dev/null 2>&1
+    echo "containers stopped (volumes kept)"
+  fi
+}
+
+cmd_status() {
+  local line job state node left reason extra=""
+  need_host
+  if ! ssh_ok; then
+    echo "job:        unknown (can't reach $host)"
+  else
+    line=$(my_jobs | head -n 1)
+    if [[ -z $line ]]; then
+      echo "job:        none"
+    else
+      IFS='|' read -r job state node left reason <<<"$line"
+      case $state in
+        PENDING) echo "job:        $job pending ($reason)" ;;
+        *)
+          # "R|<idle minutes>" once the run file exists, i.e. once everything serves.
+          extra=$(remote "f=\$d/run/$job.env
+            [ -f \"\$f\" ] && echo \"R|\$(sed -n 's/^LLM_IDLE_MINUTES=//p' \"\$f\")\"
+            true" || true)
+          case $extra in
+            "") extra=", starting" ;;
+            "R|" | "R|0") extra="" ;;
+            *) extra=", idle shutdown after ${extra#R|} min" ;;
+          esac
+          echo "job:        $job running on $node, $left left$extra"
+          ;;
+      esac
+    fi
+  fi
+
+  local pid
+  if pid=$(tunnel_pid) && ! nc -z 127.0.0.1 "$gw_port" 2>/dev/null; then
+    echo "tunnel:     running (pid $pid), waiting for a job"
+  elif [[ -n $pid ]]; then
+    echo "tunnel:     up (pid $pid), 127.0.0.1:$gw_port"
+  elif nc -z 127.0.0.1 "$gw_port" 2>/dev/null; then
+    echo "tunnel:     up (not started by llm), 127.0.0.1:$gw_port"
+  else
+    echo "tunnel:     down"
+  fi
+
+  if ! docker_up; then
+    echo "containers: Docker not running"
+  else
+    local ps_out
+    ps_out=$(compose ps -a --format '{{.Service}} {{.State}}' 2>/dev/null | sort |
+      paste -sd, - | sed 's/,/, /g')
+    echo "containers: ${ps_out:-none}"
+  fi
+
+  local models
+  if ! gateway_alive; then
+    echo "gateway:    no answer"
+  elif models=$(gateway_models) && [[ -n $models ]]; then
+    echo "gateway:    answers ($models)"
+  else
+    echo "gateway:    answers, but rejects GATEWAY_API_KEY"
+  fi
+}
+
+cmd_backup() {
+  local dir=${BACKUP_DIR:-$HOME/local-llm-backups} volume was_running=0 name t0 size n
+  ensure_docker
+  volume=$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter "label=com.docker.compose.volume=open-webui")
+  [[ -n $volume ]] || die "no Open WebUI volume yet (run llm up once)"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  name=open-webui-$(date +%Y%m%d-%H%M%S).tar.gz
+
+  # Stopping Open WebUI makes the copy consistent: its SQLite database, the vector store and
+  # the uploads are all at rest. cache/ (models Open WebUI downloads by itself) is left out.
+  if [[ -n $(compose ps -q --status running open-webui 2>/dev/null) ]]; then
+    was_running=1
+    trap 'compose start open-webui >/dev/null 2>&1 || true' EXIT
+    compose stop open-webui >/dev/null 2>&1
+  fi
+  t0=$SECONDS
+  docker run --rm --quiet -v "$volume:/data:ro" -v "$dir:/backup" "$BACKUP_IMAGE" sh -c \
+    "tar -czf /backup/$name.partial --exclude=./cache -C /data . && mv /backup/$name.partial /backup/$name"
+  if ((was_running)); then
+    compose start open-webui >/dev/null 2>&1
+    trap - EXIT
+  fi
+  tar -tzf "$dir/$name" ./webui.db >/dev/null 2>&1 || die "backup $dir/$name has no webui.db"
+  size=$(du -h "$dir/$name" | cut -f1 | tr -d ' ')
+  if ((was_running)); then
+    echo "backup: $dir/$name ($size; Open WebUI paused $((SECONDS - t0)) s)"
+  else
+    echo "backup: $dir/$name ($size)"
+  fi
+
+  n=0
+  while IFS= read -r old; do
+    rm -f "$old"
+    n=$((n + 1))
+  done < <(find "$dir" -maxdepth 1 -name 'open-webui-*.tar.gz' | sort -r | tail -n +$((BACKUPS_KEPT + 1)))
+  if ((n)); then echo "removed $n old backup(s); keeping the last $BACKUPS_KEPT"; fi
+}
+
+case ${1:-} in
+  up | down | status | backup)
+    cmd=$1
+    shift
+    "cmd_$cmd" "$@"
+    ;;
+  -h | --help | help | "") sed -n '2,13p' "$src" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (try: llm help)" ;;
+esac

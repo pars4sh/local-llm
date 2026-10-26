@@ -55,6 +55,9 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
   - SearXNG web search
   - native function calling
 
+- [x] `client/llm`: `up`, `down [--keep-ui]`, `status` and `backup` from the laptop (D-015), and
+      an idle shutdown in the serving job (`LLM_IDLE_MINUTES`, default 120 min).
+
 **Done when:** these all work from the browser:
 - a chat
 - a question about an image

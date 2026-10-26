@@ -399,3 +399,45 @@ address. Untested on Linux.
   at start; the internal network gives the same result without extra privileges.
 - Publishing SearXNG, Docling or Open Terminal ports: nothing on the laptop needs them directly.
 - Model names typed into `compose.yaml` or `.env`: a second place to keep in sync with the roster.
+
+## D-015: `client/llm` runs the whole cycle; idle jobs shut themselves down
+**Status:** accepted · 2026-10-26
+
+**Decision.** One bash script on the laptop, `client/llm` (symlinked onto `PATH`), with `up`,
+`down [--keep-ui]`, `status` and `backup`. It runs under macOS's `/bin/bash` 3.2.
+- **One job at a time.** `up` looks for my jobs named as in `cluster/serve.sbatch`
+  (`squeue -u $USER -n <name> -t PD,CF,R`) and reuses one if it exists; otherwise it submits
+  through `cluster/submit.sh` in `CLUSTER_REPO_DIR`. `down` cancels only jobs with that name.
+- **Remote commands** go to the login host as a script on stdin of `bash -s`, over one SSH
+  control connection, so the login shell (tcsh) never parses them.
+- **Progress:** one line per state (pending, starting, ready); on a terminal the line carries a
+  timer. Timeouts: 30 min in the queue (`LLM_QUEUE_TIMEOUT`; the job is left queued) and 15 min
+  for startup (`LLM_START_TIMEOUT`; it prints the log tail and the job ID). A cold start
+  measured 2:28 to 3:00.
+- **Tunnel** runs detached (`nohup`, own process group) with its PID in
+  `~/.local/state/local-llm/`. `client/tunnel.sh` now sleeps in the background, so `down`
+  stops it at once instead of after up to `TUNNEL_POLL` seconds.
+- **Backup** stops Open WebUI for about a second and archives the volume with a pinned
+  `alpine:3.24.2`, so the SQLite database, the vector store and the uploads are copied at rest
+  together. `cache/` (about 260 MB of models Open WebUI downloads by itself) is left out; a
+  backup with two chats is 1.4 MB. The last 8 are kept.
+
+**Idle shutdown.** `cluster/launch.py` reads every vLLM process's `/metrics` once a minute. A
+change in the summed `vllm:request_success_total`, or any running or waiting request, counts as
+activity (chat, embedding and rerank processes all export these). After `LLM_IDLE_MINUTES`
+(default 120, 0 = never) without activity it shuts down like on SIGTERM; it doesn't resubmit.
+A metrics fetch that fails doesn't count as idle time.
+
+**Tested** on 2026-10-26: `up` reusing a running job (5 s) and run twice (one tunnel, one job);
+`down` (9.5 s); `up` from cold (job 4733, ready in 3:00); `down --keep-ui`; `up` attaching to a
+starting job; `status` at each step; `backup` with retention (11 files to 8) and a restore into
+a scratch volume (same integrity check and row counts; Open WebUI started on it). Idle shutdown
+in job 4735 with `LLM_IDLE_MINUTES=3`: ready at 15:47:34, one request at 15:49:43, shutdown at
+15:53:34 (the next check after the request reset the timer), SLURM state COMPLETED 0:0.
+
+**Rejected.**
+- SQLite's online backup API: it copies `webui.db` only, not the vector store or the uploads, so
+  the three could disagree.
+- Counting gateway requests for idleness: Open WebUI lists models and the tunnel checks health
+  regularly, which would keep a forgotten job alive forever.
+- `scancel -n <name>` without `-u`: could cancel another user's job with the same name.

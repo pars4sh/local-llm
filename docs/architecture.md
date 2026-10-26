@@ -107,6 +107,14 @@ gateway registers it by reading that job's run file. vLLM sleep-mode hot-swappin
    the successor can't start before this job ends, so the queue wait is at least the moment the
    node frees up, and longer if others are waiting. Clients see no endpoint during the gap.
    `LLM_AUTO_RESUBMIT_MAX` caps the chain.
+6. If no request reaches any vLLM process for `LLM_IDLE_MINUTES` (default 120, 0 = never), the
+   job shuts down cleanly and frees the node, without resubmitting. The launcher reads each
+   process's `/metrics` once a minute: a change in `vllm:request_success_total`, or any running
+   or waiting request, counts as activity. Model listings and health checks through the gateway
+   don't reach vLLM, so they don't keep a job alive.
+
+From the laptop, `client/llm up` reuses or submits the job, waits for it, and starts the tunnel
+and the containers; `client/llm down` cancels the job (D-015).
 
 ## Concurrent jobs
 

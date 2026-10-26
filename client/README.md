@@ -6,6 +6,7 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 
 | File | Purpose |
 |---|---|
+| `llm` | One command for everything: `llm up`, `llm down [--keep-ui]`, `llm status`, `llm backup` |
 | `tunnel.sh` | Finds the node and gateway port from the newest run file of a running job, forwards `127.0.0.1:$GATEWAY_LOCAL_PORT` to it through the login host, and follows the job when it moves |
 | `compose.sh` | Runs `docker compose` with the repository's `.env` and the client models from the roster (`cluster/roster.py client-env`) |
 | `compose.yaml` | Open WebUI, SearXNG, Docling (docling-serve) and Open Terminal: pinned tags, only Open WebUI published (on `127.0.0.1`), named volumes |
@@ -15,19 +16,70 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 
 1. Fill in the laptop section of `.env` (template: `.env.example`).
    - `CLUSTER_SSH_HOST`: the login host, reachable with a key and no prompt.
+   - `CLUSTER_REPO_DIR`: this repository's checkout on the cluster (absolute path); `llm up`
+     submits the serving job from there.
    - `GATEWAY_API_KEY`: on the cluster, `scripts/new_client_key.sh open-webui`.
    - `WEBUI_SECRET_KEY`, `SEARXNG_SECRET`, `OPEN_TERMINAL_API_KEY`: `openssl rand -hex 32` each.
    - `OPEN_TERMINAL_DIR`: an empty folder outside the repository. It becomes the terminal's
      home directory, so Open Terminal writes `.bashrc`, `.profile` and `.local/` into it.
      Keep SSH keys, tokens, `.env` files and patient data out of it.
-2. Start the tunnel and leave it running (it reconnects by itself): `client/tunnel.sh`
-3. Start the stack: `client/compose.sh up -d`, then open `http://localhost:3000`
-   (`OPENWEBUI_PORT`).
+   - `BACKUP_DIR`: where `llm backup` writes (default `~/local-llm-backups`).
+2. Install the command: `ln -s "$PWD/client/llm" ~/.local/bin/llm` (any directory on `PATH`).
+3. `llm up`
 
-Other commands: `client/compose.sh ps`, `client/compose.sh logs -f open-webui`,
-`client/compose.sh down` (keeps the volumes).
+Python 3.11 or newer must be on `PATH` (`compose.sh` reads the roster). `llm` runs under macOS's
+`/bin/bash` 3.2.
 
-Python 3.11 or newer must be on `PATH` for `compose.sh` (it reads the roster).
+## Everyday use
+
+| Command | What it does |
+|---|---|
+| `llm up [--no-open]` | Reuses my running or pending serving job (job name from `cluster/serve.sbatch`), or submits one through `cluster/submit.sh` on the cluster. Shows pending, starting, ready; waits up to `LLM_QUEUE_TIMEOUT` (1800 s) in the queue and `LLM_START_TIMEOUT` (900 s) for startup, and on failure prints the job ID and the tail of its log. Then starts the tunnel and the containers (both skipped if already up), checks `/v1/models` through the tunnel, prints `Ready: http://localhost:3000` and opens the browser. |
+| `llm down [--keep-ui]` | Cancels my serving jobs (only those with the project's job name), stops the tunnel and stops the containers. Volumes are never removed. `--keep-ui` leaves Open WebUI running, to read old chats. |
+| `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, and whether the gateway answers with the client key |
+| `llm backup` | Backs up the Open WebUI volume to `BACKUP_DIR`, keeping the last 8 |
+
+The tunnel runs in the background; its log is `~/.local/state/local-llm/tunnel.log`.
+`client/tunnel.sh` and `client/compose.sh` still work on their own.
+
+A forgotten job doesn't hold the GPU node for long: the serving job shuts itself down after
+`LLM_IDLE_MINUTES` (cluster `.env`, default 120, 0 = never) without a request to any model.
+`llm status` shows the limit. Open WebUI listing models doesn't count as a request; a chat,
+an embedding or a rerank does.
+
+## Backup and restore
+
+`llm backup` stops Open WebUI for a moment (about a second), so its SQLite database, the vector
+store and the uploads are copied at rest, then starts it again. The archive is
+`$BACKUP_DIR/open-webui-<date>-<time>.tar.gz` (mode 700 directory; it holds your chats). It
+leaves out `cache/`, the models Open WebUI downloads by itself (about 260 MB).
+
+To restore, first check the backup in a scratch volume:
+
+```
+b=~/local-llm-backups/open-webui-YYYYMMDD-HHMMSS.tar.gz
+docker volume create llm-restore-test
+docker run --rm -v llm-restore-test:/data -v "$(dirname "$b"):/backup:ro" alpine:3.24.2 \
+  tar -xzf "/backup/$(basename "$b")" -C /data
+docker run --rm --entrypoint python3 -v llm-restore-test:/app/backend/data \
+  ghcr.io/open-webui/open-webui:v0.12.3 -c "import sqlite3; db = sqlite3.connect('/app/backend/data/webui.db'); print(db.execute('PRAGMA integrity_check').fetchone()[0], db.execute('SELECT COUNT(*) FROM chat').fetchone()[0], 'chats')"
+docker volume rm llm-restore-test
+```
+
+Then replace the live data (this deletes what is in the volume now; take an `llm backup` first
+if it holds anything you want):
+
+```
+client/compose.sh stop open-webui
+docker run --rm -v local-llm_open-webui:/data -v "$(dirname "$b"):/backup:ro" alpine:3.24.2 \
+  sh -c 'find /data -mindepth 1 -delete && tar -xzf "/backup/$1" -C /data' _ "$(basename "$b")"
+client/compose.sh start open-webui
+```
+
+Tested on 2026-10-26, both blocks as written: the restored scratch volume had the same integrity
+check and row counts (users, chats, files, models) as the live database, and Open WebUI started
+on it. The second block ran against a stand-in volume filled with junk (including hidden files),
+not against the live one: it left exactly the backup's contents.
 
 ## How it is wired
 
