@@ -102,8 +102,22 @@ gateway registers it by reading that job's run file. vLLM sleep-mode hot-swappin
 4. Write the run file.
 5. SLURM sends SIGUSR1 about 10 minutes before `SLURM_TIME` runs out. If `LLM_AUTO_RESUBMIT=1`,
    the job submits its successor and shuts down cleanly, which frees the node for it. The
-   successor needs a few minutes to start, so expect a short gap. `LLM_AUTO_RESUBMIT_MAX` caps
-   the chain.
+   successor still has to start, so a resubmit leaves a gap: the queue wait plus about 160 s of
+   startup with warm caches (all four models and the gateway; measured). With one node per user
+   the successor can't start before this job ends, so the queue wait is at least the moment the
+   node frees up, and longer if others are waiting. Clients see no endpoint during the gap.
+   `LLM_AUTO_RESUBMIT_MAX` caps the chain.
+
+## Concurrent jobs
+
+Two serving jobs (for example the main job and an on-demand coder job) must not get in each
+other's way. The design makes that so, though overlap hasn't been tested yet (phase 4):
+- Run files are `$LLM_RUN_DIR/run/<jobid>.env` and logs are `$LLM_RUN_DIR/logs/<jobid>/`, so two
+  jobs never write the same file. Every job ID so far got its own (jobs 4625 to 4647).
+- Ports are picked at job start by binding port 0 on the job's own node. Jobs on different nodes
+  can't collide, and two on one node would get different free ports.
+- What jobs share: the read-only weights, the keys file (only read by gateways), and the monthly
+  usage log, which each gateway appends to one line at a time.
 
 ## Node facts that drive decisions
 

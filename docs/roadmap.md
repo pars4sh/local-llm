@@ -6,7 +6,7 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - [x] Repository layout, agent guide (`CLAUDE.md`, `.claude/rules/`), and docs for architecture, decisions and roadmap
 - [x] `.gitignore`, `.env.example`, `CLAUDE.local.md.example`
 
-## Phase 1: Serving (cluster)
+## Phase 1: Serving (cluster) ✅
 - [x] Create a uv environment for vLLM (vLLM 0.32.0, see D-012). In a short GPU job
       (`cluster/check_env.py`), confirm that torch reports compute capability `(12, 0)`.
 - [x] `scripts/download_models.sh`: on the login node, fetch the roster checkpoints into `$LLM_MODEL_DIR`.
@@ -28,9 +28,14 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 **Done when:**
 - one `sbatch` brings up all four models behind one authenticated endpoint
 - the smoke test passes
-- a second job can run at the same time without clashing
+- jobs cannot clash by design: each job's run file and log directory are named by its job ID,
+  and ports are picked on the job's own node at startup (see `architecture.md` § Concurrent
+  jobs). Overlap can't be tested yet: the development partition allows one node per user, and a
+  resubmitted successor starts only after its predecessor ends. The real test is in phase 4.
 
 ## Phase 2: Laptop client
+- [x] First, rerun `cluster/smoke_test.sh` on the GPU with the allowlist gateway (D-013).
+      Passed 12/12 with all four models on 2026-10-26 (blocked on 2026-10-22: GPU nodes drained).
 - [ ] `client/compose.yaml` with Open WebUI, SearXNG, Docling and Open Terminal:
   - pinned tags
   - ports bound to `127.0.0.1`
@@ -66,6 +71,8 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 ## Phase 4: Coding agent
 - [ ] Qwen Code and/or OpenCode on the login node, pointed at the gateway with its own key.
 - [ ] On-demand job for a large coding model, registered in the gateway.
+- [ ] Run that job on another partition while the main job serves, and check that the two don't
+      clash: separate run files, log directories and ports, and both smoke tests pass at once.
 
 **Done when:** the agent makes a multi-file change in a real repo and the tests pass.
 
