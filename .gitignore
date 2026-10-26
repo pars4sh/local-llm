@@ -4,6 +4,8 @@
 !.env.example
 CLAUDE.local.md
 .claude/settings.local.json
+gateway-keys.json
+*.keys.json
 
 # Model weights and caches
 models/

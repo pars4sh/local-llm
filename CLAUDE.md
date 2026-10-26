@@ -66,6 +66,7 @@ Check which machine you're on before running anything:
 
 - Shell: `shellcheck` and `bash -n` on every changed `.sh` or `.sbatch` file.
 - Python: `ruff check` and `ruff format --check`.
+- Gateway: `uv run --project gateway pytest gateway/tests` after any change in `gateway/` or a LiteLLM upgrade.
 - Compose (laptop only): `docker compose -f client/compose.yaml config`.
 - Serving: run `cluster/smoke_test.sh` against a live job. It covers text, an image, a tool call,
   thinking on and off, embeddings and rerank. The script arrives in phase 1.

@@ -5,9 +5,13 @@ Instead, the gateway config that cluster/launch.py generates wires in:
 
 - `user_api_key_auth`: a request passes with the master key ($LITELLM_MASTER_KEY) or with a
   client key whose SHA-256 is listed in the keys file ($LLM_GATEWAY_KEYS). The file is reread
-  when it changes, so keys made with scripts/new_client_key.sh work without a restart.
+  when it changes, so keys made or revoked with scripts/new_client_key.sh take effect on the
+  next request. Deny by default: if the file is missing, empty, unreadable, malformed or
+  readable by other users, every client key is refused and an error is logged.
 - `usage_log`: one JSON line per request in $LLM_RUN_DIR/usage/<YYYY-MM>.jsonl with the time,
   client, model, call type, token counts, latency and status. Never any content.
+
+Neither ever logs a key or a key hash.
 """
 
 from __future__ import annotations
@@ -17,10 +21,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import stat
 import threading
 from pathlib import Path
 
 from fastapi import Request
+from litellm._logging import verbose_proxy_logger as log
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import (
     LitellmUserRoles,
@@ -29,42 +36,97 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 
-_keys_lock = threading.Lock()
-_keys_cache: dict = {"mtime": None, "keys": {}}
+_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
+_lock = threading.Lock()
+_cache: dict = {"signature": None, "keys": {}}
+_last_problem: list[str | None] = [None]
 
 
-def _client_keys() -> dict[str, str]:
-    """{sha256 hex digest: client name} from the keys file; empty if there is none."""
-    path = Path(os.environ["LLM_GATEWAY_KEYS"])
-    try:
-        mtime = path.stat().st_mtime_ns
-    except FileNotFoundError:
-        return {}
-    with _keys_lock:
-        if mtime != _keys_cache["mtime"]:
-            clients = json.loads(path.read_text()).get("clients", {})
-            _keys_cache["keys"] = {c["sha256"]: name for name, c in clients.items()}
-            _keys_cache["mtime"] = mtime
-        return _keys_cache["keys"]
+def _problem(message: str) -> dict[bytes, str]:
+    """Log a keys-file problem once (until it changes) and deny every client key."""
+    if message != _last_problem[0]:
+        log.error("gateway keys: %s; refusing all client keys", message)
+        _last_problem[0] = message
+    _cache.update(signature=None, keys={})
+    return {}
+
+
+def _client_keys() -> dict[bytes, str]:
+    """{SHA-256 digest: client name} from the keys file, or {} if it can't be trusted."""
+    path = os.environ.get("LLM_GATEWAY_KEYS")
+    if not path:
+        return _problem("LLM_GATEWAY_KEYS is not set")
+    with _lock:
+        try:
+            st = os.stat(path)
+        except OSError as e:
+            return _problem(f"cannot stat {path}: {e.strerror}")
+        if not stat.S_ISREG(st.st_mode):
+            return _problem(f"{path} is not a regular file")
+        if st.st_mode & 0o077:
+            return _problem(
+                f"{path} has mode {stat.S_IMODE(st.st_mode):o}; other users must have no "
+                "access (chmod 600)"
+            )
+        # ctime changes with permissions too, so a chmod also forces a reread.
+        signature = (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if signature == _cache["signature"]:
+            return _cache["keys"]
+        try:
+            clients = json.loads(Path(path).read_text())["clients"]
+            keys = {}
+            for name, entry in clients.items():
+                digest = entry["sha256"]
+                if not isinstance(digest, str) or not _HEX_DIGEST.fullmatch(digest):
+                    raise ValueError(f"client {name!r} has no valid sha256")
+                keys[bytes.fromhex(digest)] = name
+        except OSError as e:
+            return _problem(f"cannot read {path}: {e.strerror}")
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            return _problem(f"{path} is malformed ({type(e).__name__})")
+        if not keys:
+            log.warning("gateway keys: %s lists no clients", path)
+        _cache.update(signature=signature, keys=keys)
+        _last_problem[0] = None
+        return keys
+
+
+def _digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode()).digest()
+
+
+def _reject() -> ProxyException:
+    return ProxyException(
+        message="invalid API key",
+        type=ProxyErrorTypes.auth_error,
+        param="api_key",
+        code=401,
+    )
 
 
 async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
-    key = (api_key or "").removeprefix("Bearer ").strip()
+    # LiteLLM has already taken the token out of the Authorization (or a provider) header.
+    key = (api_key or "").strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    if not key:
+        raise _reject()
+    digest = _digest(key)
+    # Fixed-length digests, compared in constant time against every entry (no early exit).
     master = os.environ.get("LITELLM_MASTER_KEY", "")
-    if master and hmac.compare_digest(key.encode(), master.encode()):
+    is_master = hmac.compare_digest(digest, _digest(master)) and bool(master)
+    client = None
+    for stored, name in _client_keys().items():
+        if hmac.compare_digest(digest, stored):
+            client = name
+    if is_master:
         return UserAPIKeyAuth(
             api_key="master", key_alias="master", user_role=LitellmUserRoles.PROXY_ADMIN
         )
-    digest = hashlib.sha256(key.encode()).hexdigest()
-    name = _client_keys().get(digest)
-    if name is None:
-        raise ProxyException(
-            message="invalid API key",
-            type=ProxyErrorTypes.auth_error,
-            param="api_key",
-            code=401,
-        )
-    return UserAPIKeyAuth(api_key=digest, key_alias=name)
+    if client is not None:
+        # The identity LiteLLM carries around (and may log) is the name, never the key or hash.
+        return UserAPIKeyAuth(api_key=f"client:{client}", key_alias=client)
+    raise _reject()
 
 
 class UsageLog(CustomLogger):

@@ -17,6 +17,12 @@ load_env "$REPO/.env"
 
 run_dir=${LLM_RUN_DIR:-$HOME/.local-llm}
 keys=${LLM_GATEWAY_KEYS:-$run_dir/gateway-keys.json}
+case $(realpath -m "$keys")/ in
+  "$REPO"/*)
+    git -C "$REPO" check-ignore -q "$(realpath -m "$keys")" ||
+      die "$keys is inside the repository and not gitignored; keep the keys file out of git"
+    ;;
+esac
 
 action=issue
 case ${1:-} in
@@ -70,6 +76,10 @@ key=
 if [[ $action == issue ]]; then key=sk-$(openssl rand -hex 32); fi
 printf '%s' "$key" |
   uv run --quiet --no-project --python '>=3.11' python3 -c "$update" "$keys" "$action" "$name"
+
+if [[ -f $keys && $(stat -c %a "$keys") != 600 ]]; then
+  echo "warning: $keys has mode $(stat -c %a "$keys"); the gateway refuses it until: chmod 600 $keys" >&2
+fi
 
 case $action in
   issue)

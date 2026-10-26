@@ -245,20 +245,36 @@ def gateway_config(ports: dict[str, int], models: list[roster.Model]) -> dict:
     }
 
 
-def gateway_env(run_dir: Path) -> dict:
-    env = dict(os.environ)
+def model_env() -> dict:
+    """The environment for vLLM processes: everything except the gateway's master key."""
+    return {k: v for k, v in os.environ.items() if k != "GATEWAY_MASTER_KEY"}
+
+
+def gateway_command(port: int) -> list[str]:
+    """LiteLLM behind the route allowlist in gateway/local_llm_app.py, on all interfaces."""
+    return [str(REPO / "gateway" / ".venv" / "bin" / "python"), "-m", "uvicorn",
+            "local_llm_app:app", "--host", "0.0.0.0", "--port", str(port),
+            "--workers", "1"]  # fmt: skip
+
+
+def gateway_env(run_dir: Path, config: Path) -> dict:
+    env = model_env()
     env.update(
+        CONFIG_FILE_PATH=str(config),
         LITELLM_MASTER_KEY=os.environ["GATEWAY_MASTER_KEY"],
         LLM_GATEWAY_KEYS=os.environ.get("LLM_GATEWAY_KEYS")
         or str(run_dir / "gateway-keys.json"),
         LLM_RUN_DIR=str(run_dir),
         PYTHONPATH=str(REPO / "gateway"),
-        # No network fetches at startup, no telemetry, no admin UI (it needs a database).
+        # No network fetches at startup, no telemetry, no admin UI (it needs a database),
+        # no API docs. The route allowlist blocks these anyway; this is a second layer.
         LITELLM_LOCAL_MODEL_COST_MAP="True",
         LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS="True",
         LITELLM_TELEMETRY="False",
         DISABLE_ADMIN_UI="True",
         NO_DOCS="True",
+        NO_REDOC="True",
+        NO_OPENAPI="True",
     )
     return env
 
@@ -294,7 +310,6 @@ def main() -> int:
     node = os.environ.get("SLURMD_NODENAME") or socket.gethostname().split(".")[0]
     vllm = str(Path(sys.executable).with_name("vllm"))
     use_gateway = os.environ.get("LLM_GATEWAY", "1") != "0"
-    litellm = REPO / "gateway" / ".venv" / "bin" / "litellm"
     auto_resubmit = os.environ.get("LLM_AUTO_RESUBMIT") == "1"
 
     log_dir = run_dir / "logs" / job
@@ -323,7 +338,10 @@ def main() -> int:
     if missing:
         log(f"weights missing under {model_dir} for: {', '.join(missing)}")
         return 1
-    if use_gateway and not (litellm.exists() and os.environ.get("GATEWAY_MASTER_KEY")):
+    gateway_python = REPO / "gateway" / ".venv" / "bin" / "python"
+    if use_gateway and not (
+        gateway_python.exists() and os.environ.get("GATEWAY_MASTER_KEY")
+    ):
         log(
             "the gateway needs gateway/.venv (uv sync --locked --project gateway) and "
             "GATEWAY_MASTER_KEY in .env; set LLM_GATEWAY=0 to serve without it"
@@ -356,7 +374,7 @@ def main() -> int:
                 cmd = roster.build_command(m, port, model_dir, vllm=vllm)
                 log_path = log_dir / f"{m.name}.log"
                 log(f"starting {m.name} on 127.0.0.1:{port}: {shlex.join(cmd)}")
-                procs[m.name] = start(cmd, log_path)
+                procs[m.name] = start(cmd, log_path, env=model_env())
                 took = wait_ready(
                     m.name, procs[m.name], port, "/health", log_path, timeout
                 )
@@ -371,11 +389,12 @@ def main() -> int:
                 port = free_port("0.0.0.0")
                 config = log_dir / "gateway.yaml"
                 config.write_text(json.dumps(gateway_config(ports, models), indent=2))
-                cmd = [str(litellm), "--config", str(config), "--host", "0.0.0.0",
-                       "--port", str(port), "--num_workers", "1"]  # fmt: skip
+                cmd = gateway_command(port)
                 log_path = log_dir / "gateway.log"
                 log(f"starting the gateway on 0.0.0.0:{port}: {shlex.join(cmd)}")
-                procs["gateway"] = start(cmd, log_path, env=gateway_env(run_dir))
+                procs["gateway"] = start(
+                    cmd, log_path, env=gateway_env(run_dir, config)
+                )
                 took = wait_ready("gateway", procs["gateway"], port, "/health/liveliness",
                                   log_path, timeout)  # fmt: skip
                 log(f"gateway ready in {took:.1f} s")

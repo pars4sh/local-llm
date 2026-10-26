@@ -279,7 +279,7 @@ compromised, so upgrades are deliberate and the lock file holds hashes. Wire two
 - **Auth** (`custom_auth`): a request passes with the master key or with a client key whose
   SHA-256 is in the keys file (`$LLM_GATEWAY_KEYS`, mode 600). `scripts/new_client_key.sh`
   issues, lists and revokes keys; the gateway rereads the file when it changes. Anything else
-  gets HTTP 401. Only `/health/liveliness` is open.
+  gets HTTP 401.
 - **Usage log** (a callback): one JSON line per request in `$LLM_RUN_DIR/usage/<YYYY-MM>.jsonl`
   with time, client, model, call type, token counts, latency and status, but no content.
   Rejected requests are logged too.
@@ -287,6 +287,45 @@ compromised, so upgrades are deliberate and the lock file holds hashes. Wire two
 The gateway fetches nothing at startup (`LITELLM_LOCAL_MODEL_COST_MAP`,
 `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS`). Telemetry, the admin UI (it needs the database) and
 the API docs are off.
+
+**Route allowlist (added 2026-10-22 after a security review).** The first version of this entry
+said only `/health/liveliness` was open. That had not been tested, and it was wrong. Probing
+LiteLLM 1.105.1's whole route table (638 method/route pairs; its own `GET /routes` lists only
+32, because it skips FastAPI's included routers) showed about 60 that answer without a key:
+- admin UI, SSO and onboarding routes, despite `DISABLE_ADMIN_UI`
+- `/openapi.json` and `/redoc`, despite `NO_DOCS`
+- `/public/*` catalogues, two of which (`litellm_blog_posts`, `autorouter_presets`) fetch from
+  the internet on request
+- MCP, toolset and agent-skills routes, including `GET /v1/skills/{id}/archive`, which has no
+  auth dependency at all
+
+Also, with `custom_auth`, LiteLLM skips its `common_checks` unless
+`custom_auth_run_common_checks` is set, and its admin-route check lives there, so a client key
+could reach admin routes. The gateway therefore runs as `uvicorn local_llm_app:app`, which puts
+LiteLLM behind an allowlist (`gateway/local_llm_app.py`):
+- chat, completions, embeddings, rerank and model listing (with and without `/v1`, plus
+  `/v2/rerank`), each requiring a key
+- `/health/liveliness`, the only route open without a key
+- everything else gets 404 for every caller, the master key included, before LiteLLM sees the
+  request (marked with an `x-local-llm: route-not-allowed` header); every WebSocket is refused
+  with 403
+
+LiteLLM's startup loads the config from `CONFIG_FILE_PATH`, the same path its Docker image uses.
+
+**Auth review** (2026-10-22). Each item has tests in `gateway/tests/`
+(`uv run --project gateway pytest gateway/tests`, 47 tests). The hardened gateway also passed
+an end-to-end smoke test in front of fake vLLM servers and, on 2026-10-26, the GPU smoke test
+with all four models behind it (12/12 checks, including 401 without a key and with a wrong
+key). It was ready 6.1 s after launch.
+
+| Item | How |
+|---|---|
+| Deny by default | A missing, empty, unreadable, malformed or non-regular keys file, a file readable by other users, or an unset `LLM_GATEWAY_KEYS` refuses every client key and logs one error per distinct problem. The master key still works, so the admin is never locked out. A file that turns bad after use is caught on the next request (the cache key includes ctime). |
+| Constant-time comparison | SHA-256 digests (fixed length) compared with `hmac.compare_digest` against the master key and every client entry, with no early exit |
+| Status codes | Wrong key, no key, malformed headers (`Bearer` without a token, `Basic`, another scheme, a truncated key) and a revoked key get 401; a valid key gets 200, also in `x-api-key` and `api-key` headers |
+| Routes | Every `/v1/*` route needs a key or is blocked. Without a key, only `/health/liveliness` answers |
+| Secrets in logs | No key, master key or key hash in the gateway log or the usage log. LiteLLM sees a client as `client:<name>`, never by its hash. vLLM processes no longer receive the master key |
+| Keys file | Written with mode 600; the gateway refuses it otherwise. `new_client_key.sh` refuses a path inside the repo unless it is gitignored, and `.gitignore` covers `gateway-keys.json` |
 
 **Verified** on the GPU (job with `qwen-main`, smoke test through the gateway with a temporary
 client key) and offline (real LiteLLM in front of fake vLLM servers that record what they
@@ -298,9 +337,13 @@ receive):
 - reasoning text comes back unchanged, but **under a different field name**: vLLM 0.32 streams
   it as `reasoning`, and LiteLLM renames it to `reasoning_content`. Clients should read
   `reasoning_content` (Open WebUI does).
-- embeddings and rerank go through the gateway (offline so far)
+- embeddings and rerank go through the gateway, on the GPU too (since 2026-10-21, see D-007)
 - the gateway adds about 0.1 s to the time to first token; decode speed is unchanged
 
 **Rejected.**
 - LiteLLM virtual keys with Postgres: needs a database service.
 - One shared key for all clients: no way to revoke or attribute usage per client.
+- `custom_auth_run_common_checks: true` instead of the allowlist: it would still leave the
+  unauthenticated routes open, and its checks expect database records.
+- Starlette middleware added to LiteLLM's app from inside the config: LiteLLM loads the config
+  after the app has started, when middleware can no longer be added.

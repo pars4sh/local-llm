@@ -37,6 +37,9 @@ paths:
   sequence. Set `--max-num-seqs` below the block count that vLLM logs, or startup fails. The
   main model uses 64 (see D-012).
 - Each vLLM process binds to `127.0.0.1`. Only the gateway binds to all interfaces, and it requires a key.
+- The gateway serves only the routes in `gateway/local_llm_app.py` (D-013). A new client feature that
+  needs another LiteLLM route (for example `/v1/responses`) means extending that allowlist and its
+  tests, never turning the allowlist off.
 
 ## Models and downloads
 - Compute nodes have internet at the development site, but not at every site. Either way:
