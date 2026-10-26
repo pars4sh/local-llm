@@ -11,7 +11,8 @@ Runs inside the serving job (cluster/serve.sbatch):
 
 If a process exits, or the job gets SIGTERM/SIGINT, stop everything and remove the run file.
 SLURM sends SIGUSR1 about 10 minutes before the time limit (serve.sbatch); with
-LLM_AUTO_RESUBMIT=1 the job then submits its successor and shuts down.
+LLM_AUTO_RESUBMIT=1 the job then submits its successor and shuts down. If no request reaches
+any vLLM process for LLM_IDLE_MINUTES, the job shuts down too, so a forgotten job frees the node.
 
 Environment:
     LLM_MODEL_DIR          weights directory (required)
@@ -22,6 +23,8 @@ Environment:
     LLM_AUTO_RESUBMIT=1    submit a successor job on SIGUSR1 (off by default)
     LLM_AUTO_RESUBMIT_MAX  stop resubmitting after this many successors (default: no limit)
     LLM_STARTUP_TIMEOUT    seconds to wait for one process to become healthy (default 1800)
+    LLM_IDLE_MINUTES       shut down after this many minutes without requests (default 120,
+                           0 = never)
     SLURM_JOB_ID           set by SLURM
 """
 
@@ -48,6 +51,13 @@ import roster
 
 REPO = Path(__file__).resolve().parent.parent
 STOP_GRACE_S = 30
+IDLE_CHECK_S = 60
+# vLLM's request metrics, the same for chat and pooling models. A finished request moves the
+# counter; a long request in flight shows in the gauges.
+_REQUESTS_DONE = re.compile(r"^vllm:request_success_total(?:\{[^}]*\})? (\S+)$", re.M)
+_REQUESTS_OPEN = re.compile(
+    r"^vllm:num_requests_(?:running|waiting)(?:\{[^}]*\})? (\S+)$", re.M
+)
 # Startup milestones vLLM logs; reported per model when found.
 MILESTONES = {
     "weights loaded in (s)": re.compile(r"Loading weights took ([\d.]+) ?s"),
@@ -111,6 +121,25 @@ def healthy(port: int, path: str = "/health") -> bool:
             return r.status == 200
     except (urllib.error.URLError, http.client.HTTPException, OSError):
         return False
+
+
+def request_activity(ports: dict[str, int]) -> tuple[float, float] | None:
+    """(finished requests, requests running or waiting), summed over the vLLM processes.
+
+    None if no process answered, so a metrics outage never counts as idle time.
+    """
+    done = open_ = 0.0
+    answered = False
+    for port in ports.values():
+        try:
+            with _http.open(f"http://127.0.0.1:{port}/metrics", timeout=5) as r:
+                text = r.read().decode(errors="replace")
+        except (urllib.error.URLError, http.client.HTTPException, OSError):
+            continue
+        answered = True
+        done += sum(float(v) for v in _REQUESTS_DONE.findall(text))
+        open_ += sum(float(v) for v in _REQUESTS_OPEN.findall(text))
+    return (done, open_) if answered else None
 
 
 def gpu_memory() -> str:
@@ -311,6 +340,7 @@ def main() -> int:
     vllm = str(Path(sys.executable).with_name("vllm"))
     use_gateway = os.environ.get("LLM_GATEWAY", "1") != "0"
     auto_resubmit = os.environ.get("LLM_AUTO_RESUBMIT") == "1"
+    idle_minutes = float(os.environ.get("LLM_IDLE_MINUTES") or 120)
 
     log_dir = run_dir / "logs" / job
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -355,7 +385,8 @@ def main() -> int:
     log(
         f"job {job} on {node}; models: {', '.join(m.name for m in models)}; "
         f"gateway: {'on' if use_gateway else 'off'}; auto-resubmit: "
-        f"{'on' if auto_resubmit else 'off'}; logs in {log_dir}"
+        f"{'on' if auto_resubmit else 'off'}; idle shutdown: "
+        f"{f'{idle_minutes:g} min' if idle_minutes > 0 else 'off'}; logs in {log_dir}"
     )
     log(f"GPU memory before start: {gpu_memory()}")
     procs: dict[str, subprocess.Popen] = {}
@@ -406,11 +437,28 @@ def main() -> int:
         run["LLM_STARTED"] = (
             dt.datetime.now().astimezone().isoformat(timespec="seconds")
         )
+        run["LLM_IDLE_MINUTES"] = f"{idle_minutes:g}"
         write_run_file(run_file, run)
         log(f"all ready in {time.monotonic() - job_t0:.1f} s; run file {run_file}")
 
         warned = False
+        last_active = next_idle_check = time.monotonic()
+        last_done: float | None = None
         while _stop_signal is None:
+            if idle_minutes > 0 and time.monotonic() >= next_idle_check:
+                next_idle_check = time.monotonic() + IDLE_CHECK_S
+                activity = request_activity(ports)
+                if activity is not None:
+                    done, open_ = activity
+                    if open_ > 0 or (last_done is not None and done != last_done):
+                        last_active = time.monotonic()
+                    last_done = done
+                if time.monotonic() - last_active >= idle_minutes * 60:
+                    log(
+                        f"no requests for {idle_minutes:g} min (LLM_IDLE_MINUTES); "
+                        "shutting down to free the node"
+                    )
+                    return 0
             for name, proc in procs.items():
                 if proc.poll() is not None:
                     log(
