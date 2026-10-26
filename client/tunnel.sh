@@ -26,6 +26,11 @@ poll=${TUNNEL_POLL:-30}
 IFS=, read -ra bind_addrs <<<"${TUNNEL_BIND_ADDRS:-127.0.0.1}"
 
 log() { echo "$(date '+%F %T') tunnel: $*" >&2; }
+# Sleep in the background, so a TERM (e.g. from `llm down`) is handled at once, not after it.
+pause() {
+  sleep "$poll" &
+  wait $! || true
+}
 
 for addr in "${bind_addrs[@]}"; do
   if nc -z "$addr" "$local_port" 2>/dev/null; then
@@ -90,7 +95,7 @@ while true; do
     current=""
     if ! start_master; then
       log "can't reach $host; retrying in ${poll}s"
-      sleep "$poll"
+      pause
       continue
     fi
   fi
@@ -127,5 +132,5 @@ while true; do
   elif ((rc != 0)); then
     log "run-file lookup failed (ssh exit $rc); retrying in ${poll}s"
   fi
-  sleep "$poll"
+  pause
 done
