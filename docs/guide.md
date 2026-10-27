@@ -7,8 +7,10 @@ new to you, it is explained the first time it appears, and again in the glossary
 
 This is a private AI assistant, similar to ChatGPT, that runs on the university's own computers
 instead of a company's. You talk to it in your web browser, and it can search the web and
-scientific databases, read your papers and figures, and write code. Your chats, papers and
-questions stay on your Mac and the university's computers; nothing is sent to an AI company.
+scientific databases, read your papers and figures, and write code. The AI models run only on
+the university's computers, and your chats and files stay there and on your Mac. When Research
+searches, though, its search words and the pages it opens go to outside services (web search,
+OpenAlex, Semantic Scholar, PubMed, arXiv, Hugging Face); your chats and files are not sent.
 
 ## 2. Start and stop
 
@@ -42,6 +44,9 @@ grey box, paste it into that window, and press Return.
    job 4835: ready on ... (took 2:59)
    Ready: http://localhost:3000
    ```
+
+   **localhost** means "this Mac": the chat page runs on your own computer, and only you can
+   open it.
 
 3. Your browser opens the chat page by itself. If it doesn't, open your browser and go to this
    address:
@@ -224,7 +229,8 @@ Every **Monday at 10:00** the assistant collects new papers from the past week o
 2. Click the newest one to read it.
 
 The digest only runs if, at 10:00 on Monday, the assistant has been started with `llm up` and
-the Mac is awake (not asleep, lid open or plugged in). If it was missed, see section 7.
+the Mac is switched on and not asleep. If the Monday auto-start is set up, `llm up` starts by
+itself at 09:40; otherwise run it yourself before 10:00. If the digest was missed, see section 7.
 
 ## 5. Safety habits
 
@@ -232,8 +238,10 @@ the Mac is awake (not asleep, lid open or plugged in). If it was missed, see sec
   asked to keep confidential go into the Private collection and Private chats, which can't reach
   the internet. Research reads web pages, and a web page can contain hidden instructions that try
   to make the assistant send your text somewhere.
-- **Never put patient data into Research.** Anything that could identify a patient stays out of
-  any assistant that uses the web. If in doubt, leave it out.
+- **Patient data only where your project's data rules allow it, and never in Research.** Use
+  patient data at all only if your project's data rules allow processing on the university
+  cluster. Even then, keep anything that could identify a patient out of Research and any other
+  assistant that uses the web. If in doubt, leave it out.
 - **Never paste passwords, keys or tokens into any chat.** A **token** or key is a long secret
   string that works like a password for a service. Chats are stored, and backed up.
 
@@ -308,6 +316,7 @@ free space: Apple menu → System Settings → General → Storage. Keep at leas
   ends it.
 - **Idle stop:** the job ends by itself after 2 hours without a question.
 - **Knowledge base (collection):** a set of your PDFs the assistant can search and quote.
+- **localhost:** "this Mac". http://localhost:3000 is the chat page running on your own computer.
 - **Model:** the AI itself. Several run together: a main one, a fast one (behind Quick), and two
   small helpers for searching your papers.
 - **OpenAlex, PubMed, arXiv, Semantic Scholar:** public databases of scientific papers that
