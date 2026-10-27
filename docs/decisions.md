@@ -441,3 +441,18 @@ in job 4735 with `LLM_IDLE_MINUTES=3`: ready at 15:47:34, one request at 15:49:4
 - Counting gateway requests for idleness: Open WebUI lists models and the tunnel checks health
   regularly, which would keep a forgotten job alive forever.
 - `scancel -n <name>` without `-u`: could cancel another user's job with the same name.
+
+## D-018: Open WebUI runs in offline mode, without local Whisper
+**Status:** accepted · 2026-10-27
+
+**Decision.** `OFFLINE_MODE=true` and `WHISPER_MODEL=""` in `client/compose.yaml`.
+
+- Open WebUI 0.12.3 ships its Whisper (base, 142 MB) and sentence-transformers (122 MB) models in
+  the image; Docker copied them into the volume's `cache/` on first start. Offline mode sets
+  `HF_HUB_OFFLINE`, turns off the version check and skips pip installs for Python tools, so
+  nothing is downloaded at start. Embeddings and reranking go through the gateway (D-007) and
+  voice input isn't set up, so neither model is used; an empty `WHISPER_MODEL` keeps Whisper from
+  loading.
+- Offline mode doesn't touch web search, `fetch_url` or the MCP tool servers.
+- Consequence: Python tools or functions that declare pip requirements won't install them. The
+  preset guard (D-017) needs none.
