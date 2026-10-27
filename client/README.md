@@ -9,8 +9,9 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 | `llm` | One command for everything: `llm up`, `llm down [--keep-ui]`, `llm status`, `llm backup` |
 | `tunnel.sh` | Finds the node and gateway port from the newest run file of a running job, forwards `127.0.0.1:$GATEWAY_LOCAL_PORT` to it through the login host, and follows the job when it moves |
 | `compose.sh` | Runs `docker compose` with the repository's `.env` and the client models from the roster (`cluster/roster.py client-env`) |
-| `compose.yaml` | Open WebUI, SearXNG, Docling (docling-serve) and Open Terminal: pinned tags, only Open WebUI published (on `127.0.0.1`), named volumes |
+| `compose.yaml` | Open WebUI, SearXNG, Docling (docling-serve), Open Terminal and the MCP tool servers: pinned tags, only Open WebUI published (on `127.0.0.1`), named volumes |
 | `searxng/settings.yml` | SearXNG config: JSON output for Open WebUI, rate limiting off for local use |
+| `tools/` | Images built here: the arXiv MCP server (no published image) and our Semantic Scholar MCP server; pinned base and pip lock files |
 
 ## Setup
 
@@ -97,10 +98,38 @@ settings in the admin panel are lost on restart. Change `compose.yaml` instead.
 | Open Terminal | system connection `Sandbox`, proxied through the Open WebUI backend |
 | Function calling | native (Open WebUI 0.12's default for every model) |
 | Thinking | the gateway streams it as `reasoning_content`; Open WebUI shows it as a collapsible block |
+| MCP tool servers | `TOOL_SERVER_CONNECTIONS`, one container each on the `web` network (see Tools) |
+| Offline mode | `OFFLINE_MODE=true`: nothing is downloaded from Hugging Face; `WHISPER_MODEL=""` keeps local Whisper unloaded (voice input isn't set up) |
 
 Docling and Open Terminal sit on the `sandbox` network, which is `internal: true`: they can't
 reach the internet. Open Terminal therefore can't read the web, and a prompt injected through
 it has nowhere to send data (D-008).
+
+## Tools
+
+Each tool is an MCP server in its own container, speaking Streamable HTTP, on the `web` network
+(route out; only Open WebUI shares it). Open WebUI registers them through
+`TOOL_SERVER_CONNECTIONS` in `compose.yaml`, where `function_name_filter_list` exposes only each
+server's reading tools. The comparison behind the choices is D-016.
+
+| Id | Server | Exposed tools | Key in `.env` (optional) |
+|---|---|---|---|
+| `page` | Playwright MCP (headless Chromium) | `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_wait_for` | |
+| `pubmed` | cyanheads/pubmed-mcp-server | PubMed search and fetch, PMC full text, Europe PMC search | `NCBI_API_KEY` |
+| `openalex` | cyanheads/openalex-mcp-server | works search, citation graph | `OPENALEX_API_KEY` |
+| `arxiv` | blazickjp/arxiv-mcp-server (built in `tools/arxiv/`) | search, abstract, full text, outline and sections | |
+| `s2` | our own (`tools/semantic-scholar/server.py`) | `search_papers`, `get_papers` (batch), `citation_graph` | `S2_API_KEY` (sent as `x-api-key`) |
+| `huggingface` | huggingface/hf-mcp-server (built from the release commit) | `hub_repo_search`, `hub_repo_details`, `hf_fs` (papers, docs, files) | `HF_TOKEN` (read-only) |
+
+`LITERATURE_CONTACT_EMAIL` is sent to NCBI, Europe PMC and OpenAlex, which ask clients for a
+contact. Without keys everything works at the anonymous rate limits; Semantic Scholar's anonymous
+pool is refused most of the time. The Semantic Scholar server is the only client of the S2 key:
+one process, one limiter (a request every `S2_MIN_INTERVAL` = 1.1 s, below the key's 1/s across
+all endpoints) for every tool call and the digest, backoff and retry on 429, the batch endpoint
+for details, and only the fields it shows. It never logs the key.
+
+Built-in web search (SearXNG) and `fetch_url` stay as they were; the page reader is for pages
+that need JavaScript.
 
 ## Manual Open WebUI settings
 

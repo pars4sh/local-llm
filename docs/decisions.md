@@ -442,6 +442,63 @@ in job 4735 with `LLM_IDLE_MINUTES=3`: ready at 15:47:34, one request at 15:49:4
   regularly, which would keep a forgotten job alive forever.
 - `scancel -n <name>` without `-u`: could cancel another user's job with the same name.
 
+## D-016: Tool servers: one MCP container per source, read-only tools only
+**Status:** accepted · 2026-10-27
+
+**Decision.** Every tool runs as its own container in `client/compose.yaml`, speaks MCP over
+Streamable HTTP, and sits on a `web` network that has a route out and that only Open WebUI
+shares (Open Terminal and Docling stay on `sandbox`). Open WebUI registers them through
+`TOOL_SERVER_CONNECTIONS`; each connection's `function_name_filter_list` (a suffix-match
+allowlist) exposes only reading tools. No server needed mcpo: all chosen ones speak HTTP.
+
+| Id | Server | Version | Why it won |
+|---|---|---|---|
+| `page` | Playwright MCP, `mcr.microsoft.com/playwright/mcp` | v0.0.83 (2026-10-09) | Official, Apache-2.0, arm64. Renders JavaScript (a Nature article came back as a 100k-character accessibility snapshot). Of its 25 tools only navigate, snapshot, find and wait are exposed; `browser_run_code_unsafe`, `browser_evaluate`, forms and file upload are not. Fresh in-memory profile (`--isolated`); the stack's own origins are blocked. |
+| `pubmed` | cyanheads/pubmed-mcp-server | 2.10.22 (2026-10-12) | Best precision: 10/10 relevant on the Mg query, 8/10 on registration, both exact hits on virtual staining, in about 1 s. Also Europe PMC search and PMC full text. Apache-2.0, released weekly. |
+| `openalex` | cyanheads/openalex-mcp-server | 0.9.0 (2026-10-18) | Same top 10 as paper-search-mcp (same API) but with citation counts, venues, DOIs and a citation-graph tool. Finds conference papers: ICCV, CVPR, NeurIPS, AAAI and WACV all showed up on the CV queries. Apache-2.0. |
+| `arxiv` | blazickjp/arxiv-mcp-server | 0.8.2 (PyPI, 2026-10-08) | The only arXiv candidate without junk: the other two pass words to arXiv loosely and returned gamma-ray bursts and exoplanet ice for the registration query. Best on all three CV queries (V-JEPA first for the JEPA query). Apache-2.0, 3.2k stars. No image: built from `client/tools/arxiv/` (pinned base, pip lock). |
+| `huggingface` | huggingface/hf-mcp-server (official) | v0.4.30 (2026-10-13) | Official; replaces Papers with Code: repo search, repo details, and `hf_fs` for papers (with linked models and datasets) and docs. The published image is amd64 only, so it is built from the release commit. `DISABLE_TOOLS` removes repo creation, file writes, Jobs, Sandboxes and dynamic Spaces; the allowlist also keeps out Space tools the account adds (one image-generation Space was there by default). `HF_TOKEN` should be read-only. |
+
+**How they were compared** (2026-10-27). Each candidate ran in a scratch compose project and got
+the same queries through a small MCP client: three biomedical ones (Mg implant degradation and
+micro-CT in vivo; registration of micro-CT to histology of bone; deep-learning virtual staining
+from micro-CT) and three CV ones (action anticipation in egocentric video; self-supervised video
+representation learning with JEPA; 3D spatial understanding from egocentric video). Judged on
+the relevance of the top 10, then maintenance and licence.
+
+**Rejected.**
+- PubMed: BioMCP 0.9.3 (MIT, active): good ranking, but 15 to 60 s per query (PubTator timeouts)
+  and dozens of genomics tools we don't need. mcp-simple-pubmed 0.1.16 (MIT): same PubMed hits,
+  5 to 7 s and about 40k characters per answer; stdio only, and breaks on a fresh install
+  because it doesn't cap `mcp<2`.
+- OpenAlex / Semantic Scholar: paper-search-mcp 0.1.4 (MIT): 57 tools including Sci-Hub
+  download and Google Scholar scraping; PyPI release lags the repository by months.
+  semantic-scholar-mcp 0.4.0: doesn't start (missing PyMuPDF).
+- arXiv: cyanheads/arxiv-mcp-server 1.6.1 and paper-search-mcp's arXiv search: off-topic hits
+  (above).
+- Page reader: Crawl4AI 0.9.5: 10.8 GB image (with stray QEMU core dumps) and MCP only over SSE
+  and WebSocket.
+
+**Semantic Scholar** (`s2`, added the same day once a key was available). Written here,
+`client/tools/semantic-scholar/server.py` (about 200 lines on the pinned MCP SDK), because no
+candidate met the key's terms (1 request/s across all endpoints): semantic-scholar-mcp 0.4.0
+has batch and a limiter but doesn't start and logs the key's status; xiuyechen's and
+paper-search-mcp have no batch endpoint; JackKuo666's has no key support, limiter or licence;
+BioMCP limits per process while the arXiv server would hold the key too. Ours:
+- one process and one asyncio limiter: request starts at least 1.1 s apart, whatever calls
+  them in parallel (measured: six parallel calls started 1.10 s apart);
+- 429 and 5xx: exponential backoff honouring Retry-After, up to 5 retries, each through the
+  limiter again;
+- `POST /paper/batch` for details; each tool asks only for the fields it prints;
+- `x-api-key` on every request; httpx's request logging is off and its own log lines carry
+  only method and path.
+
+The key is no longer given to the arXiv server (its `citation_graph` isn't exposed), so this is
+the only S2 client. OpenAlex stays as the fallback the Research prompt names. Measured on
+2026-10-27 with the new key: it is accepted (a wrong key gets 403), but about one request in
+four still got 429 even at one request per 5 s, with the anonymous-pool message; the retries
+absorb it at a few seconds' cost. To check with Semantic Scholar if it persists.
+
 ## D-018: Open WebUI runs in offline mode, without local Whisper
 **Status:** accepted · 2026-10-27
 

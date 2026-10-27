@@ -4,7 +4,8 @@
 # Only Open WebUI publishes a port, on 127.0.0.1. It reaches the gateway through the SSH tunnel
 # (client/tunnel.sh) at host.docker.internal. Docling and Open Terminal sit on an internal
 # network with no route out: Docling only converts uploads, and Open Terminal must not read
-# the web (D-008).
+# the web (D-008). The MCP tool servers read the web, so they sit on their own network with a
+# route out, which only Open WebUI shares (D-016).
 name: local-llm
 
 services:
@@ -20,10 +21,17 @@ services:
     networks:
       - default
       - sandbox
+      - web
     depends_on:
       - searxng
       - docling
       - open-terminal
+      - page-reader
+      - pubmed
+      - openalex
+      - arxiv
+      - semantic-scholar
+      - huggingface
     environment:
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}
       # The settings below are the source of truth: they apply on every start, and changes made
@@ -70,6 +78,133 @@ services:
         "url": "http://open-terminal:8000", "auth_type": "bearer",
         "key": "${OPEN_TERMINAL_API_KEY:?set OPEN_TERMINAL_API_KEY in .env}"}]
 
+      # MCP tool servers (Streamable HTTP). function_name_filter_list exposes only the reading
+      # tools of each server; the presets in client/presets/ decide which servers each preset
+      # gets, and the preset-guard filter enforces it (D-016, D-017).
+      TOOL_SERVER_CONNECTIONS: >-
+        [{"type": "mcp", "url": "http://page-reader:8931/mcp", "auth_type": "none",
+          "info": {"id": "page", "name": "Page reader",
+                   "description": "Open a web page in a headless browser and read it"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "browser_navigate,browser_snapshot,browser_find,browser_wait_for"}},
+         {"type": "mcp", "url": "http://pubmed:3010/mcp", "auth_type": "none",
+          "info": {"id": "pubmed", "name": "PubMed / Europe PMC",
+                   "description": "Biomedical literature: PubMed, PMC and Europe PMC"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "pubmed_search_articles,pubmed_fetch_articles,pubmed_fetch_fulltext,pubmed_europepmc_search"}},
+         {"type": "mcp", "url": "http://openalex:3010/mcp", "auth_type": "none",
+          "info": {"id": "openalex", "name": "OpenAlex",
+                   "description": "Scholarly works across all fields, citation counts and citation graph"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "openalex_search_entities,openalex_get_citation_graph"}},
+         {"type": "mcp", "url": "http://arxiv:8000/mcp", "auth_type": "none",
+          "info": {"id": "arxiv", "name": "arXiv",
+                   "description": "arXiv preprints: search, abstracts and full text"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "search_papers,get_abstract,download_paper,read_paper_section,get_paper_outline"}},
+         {"type": "mcp", "url": "http://semantic-scholar:8000/mcp", "auth_type": "none",
+          "info": {"id": "s2", "name": "Semantic Scholar",
+                   "description": "Papers in all fields incl. CS conferences, citation counts and graph"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "search_papers,get_papers,citation_graph"}},
+         {"type": "mcp", "url": "http://huggingface:3000/mcp", "auth_type": "bearer",
+          "key": "${HF_TOKEN:-}",
+          "info": {"id": "huggingface", "name": "Hugging Face",
+                   "description": "Models, datasets, Spaces and papers on the Hugging Face Hub"},
+          "config": {"enable": true,
+                     "function_name_filter_list": "hub_repo_search,hub_repo_details,hf_fs"}}]
+
+  # ---- MCP tool servers. They read the web, so they sit on `web`, which has a route out and
+  # which only Open WebUI shares. Each is pinned; see D-016 for the comparison behind them.
+
+  # JavaScript-rendering page reader: headless Chromium, a fresh in-memory profile per session.
+  page-reader:
+    image: mcr.microsoft.com/playwright/mcp:v0.0.83
+    restart: unless-stopped
+    init: true
+    networks:
+      - web
+    # Snapshot tools accept a `filename` and will save there; a model asked to write a file
+    # used that. Keep every write in small RAM disks that vanish on restart.
+    read_only: true
+    tmpfs:
+      - /home/node:size=128m,uid=1000,gid=1000,mode=0700
+      - /tmp:size=256m,mode=1777
+    shm_size: 512m
+    command:
+      - --headless
+      - --browser=chromium
+      - --isolated
+      - --no-sandbox
+      - --host=0.0.0.0
+      - --port=8931
+      - --allowed-hosts=page-reader:8931
+      # Defence in depth against a page steering the browser at the stack itself.
+      - --blocked-origins=http://open-webui:8080;http://host.docker.internal:${GATEWAY_LOCAL_PORT:-4000}
+
+  pubmed:
+    image: ghcr.io/cyanheads/pubmed-mcp-server:2.10.22
+    restart: unless-stopped
+    networks:
+      - web
+    environment:
+      MCP_TRANSPORT_TYPE: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3010"
+      # Optional: an NCBI key raises the limit from 3 to 10 requests/s; NCBI asks for a contact.
+      NCBI_API_KEY: ${NCBI_API_KEY:-}
+      NCBI_ADMIN_EMAIL: ${LITERATURE_CONTACT_EMAIL:-}
+      EUROPEPMC_EMAIL: ${LITERATURE_CONTACT_EMAIL:-}
+
+  openalex:
+    image: ghcr.io/cyanheads/openalex-mcp-server:0.9.0
+    restart: unless-stopped
+    networks:
+      - web
+    environment:
+      MCP_TRANSPORT_TYPE: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3010"
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+      OPENALEX_MAILTO: ${LITERATURE_CONTACT_EMAIL:-}
+
+  arxiv:
+    build: ./tools/arxiv
+    image: local-llm/arxiv-mcp:0.8.2
+    restart: unless-stopped
+    networks:
+      - web
+    # No Semantic Scholar key here: the semantic-scholar service is the only S2 client, so one
+    # limiter covers the key's 1 request/s (its citation_graph tool isn't exposed anyway).
+
+  # Semantic Scholar (client/tools/semantic-scholar/server.py): one process, one limiter at
+  # one request per S2_MIN_INTERVAL seconds for every tool call and the digest, 429 backoff.
+  semantic-scholar:
+    build: ./tools/semantic-scholar
+    image: local-llm/s2-mcp:1
+    restart: unless-stopped
+    networks:
+      - web
+    environment:
+      S2_API_KEY: ${S2_API_KEY:-}
+      S2_MIN_INTERVAL: "1.1"
+
+  # The official Hugging Face MCP server. The published image is amd64 only, so it is built
+  # from the release commit (v0.4.30). Write, Jobs, Sandbox and dynamic-Space tools are
+  # disabled here and filtered out above; the token in .env should be read-only as well.
+  huggingface:
+    build: https://github.com/huggingface/hf-mcp-server.git#1011f57ddee32a7505f4d8406da34cb27bc383c4
+    image: local-llm/hf-mcp:0.4.30
+    restart: unless-stopped
+    networks:
+      - web
+    environment:
+      TRANSPORT: streamableHttpJson
+      MCP_ALLOWED_HOSTS: huggingface
+      # Everything that writes or runs code. Spaces the account adds as tools (gr*_...) are not
+      # listed here; Open WebUI's allowlist above keeps them out.
+      DISABLE_TOOLS: create_repo,hf_fs_write,hf_jobs,hf_sandbox,hf_sandbox_exec,hf_sandbox_fs,dynamic_space
+
   searxng:
     image: searxng/searxng:2026.10.17-decdfa6f7
     restart: unless-stopped
@@ -104,6 +239,8 @@ networks:
   # No route out of this network: only Open WebUI, Docling and Open Terminal are on it.
   sandbox:
     internal: true
+  # Web-reading tool servers and Open WebUI. Has a route out; Open Terminal is not on it.
+  web: {}
 
 volumes:
   open-webui:

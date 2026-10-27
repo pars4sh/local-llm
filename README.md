@@ -59,6 +59,22 @@ docs/      Architecture, decisions, roadmap
 Not available yet; it will be written once phases 1 and 2 of the [roadmap](docs/roadmap.md)
 are done. All site-specific settings will live in `.env`; see [.env.example](.env.example).
 
+## Data sources and attribution
+
+The Research preset's literature search uses these services through MCP tool servers
+(`client/compose.yaml`, D-016):
+
+- **Semantic Scholar.** Literature search uses the
+  [Semantic Scholar API](https://www.semanticscholar.org/product/api). Results that use it
+  should cite:
+
+  > Rodney Kinney, Chloe Anastasiades, Russell Authur, Iz Beltagy, Jonathan Bragg, et al.
+  > *The Semantic Scholar Open Data Platform.* arXiv:2301.10140, 2023.
+  > https://arxiv.org/abs/2301.10140
+
+- PubMed, PubMed Central and Europe PMC (NCBI E-utilities, Europe PMC REST API), OpenAlex,
+  arXiv and the Hugging Face Hub.
+
 ## License
 
 Not chosen yet.

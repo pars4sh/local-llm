@@ -34,6 +34,7 @@ The system has three layers, and each does one job:
 | SearXNG | Laptop | Private metasearch behind the web-search tool |
 | Docling (docling-serve) | Laptop | Extracts PDFs and Office files (tables, equations, layout) for RAG |
 | Open Terminal | Laptop | Creates and edits files and runs code, confined to one sandbox folder |
+| MCP tool servers | Laptop | Page reader (headless browser), PubMed / Europe PMC, arXiv, Semantic Scholar, OpenAlex, Hugging Face (D-016) |
 | Qwen Code / OpenCode | Login node | Agentic coding against the gateway |
 
 The UI services live on the laptop for two reasons:
