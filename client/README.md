@@ -136,6 +136,10 @@ all endpoints) for every tool call and the digest, backoff and retry on 429 for 
 search for searches, the batch endpoint for details, and only the fields it shows. It never
 logs the key; each 429 is logged with endpoint, body and headers (D-019).
 
+Every search tool's results end each paper with `abstract:` and the abstract's first two
+sentences, or `abstract: not available` when the source has none (D-023). For PubMed and arXiv
+this is a build-time patch of the pinned versions (`tools/pubmed/`, `tools/arxiv/`).
+
 Built-in web search (SearXNG) and `fetch_url` stay as they were; the page reader is for pages
 that need JavaScript.
 

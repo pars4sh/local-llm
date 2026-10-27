@@ -36,9 +36,10 @@ API = "https://api.semanticscholar.org/graph/v1"
 MIN_INTERVAL = float(os.environ.get("S2_MIN_INTERVAL", "1.1"))
 RETRY_BUDGET = float(os.environ.get("S2_RETRY_BUDGET", "20"))
 UNAVAILABLE = "Semantic Scholar unavailable, try OpenAlex"
-SEARCH_FIELDS = "title,year,publicationDate,venue,externalIds,citationCount"
-DETAIL_FIELDS = SEARCH_FIELDS + ",authors,abstract,tldr,referenceCount,openAccessPdf"
-EDGE_FIELDS = "title,year,venue,externalIds,citationCount"
+# Search and citation lists carry each abstract's first sentences (D-023).
+SEARCH_FIELDS = "title,year,publicationDate,venue,externalIds,citationCount,abstract"
+DETAIL_FIELDS = SEARCH_FIELDS + ",authors,tldr,referenceCount,openAccessPdf"
+EDGE_FIELDS = "title,year,venue,externalIds,citationCount,abstract"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,6 +173,23 @@ def line(p: dict) -> str:
     )
 
 
+def first_sentences(text: str | None) -> str:
+    """The first two sentences, at most about 450 characters, marked " …" when the text goes
+    on; "not available" when there is none (D-023)."""
+    t = " ".join((text or "").split())
+    if not t:
+        return "not available"
+    out = " ".join(re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])", t)[:2])
+    if len(out) > 450:
+        out = out[:450].rsplit(" ", 1)[0]
+    return f"{out} …" if len(out) < len(t) else out
+
+
+def listed(p: dict) -> str:
+    """A search or citation-list entry: the paper's line, then its first sentences."""
+    return f"{line(p)}\n  abstract: {first_sentences(p.get('abstract'))}"
+
+
 security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=[
@@ -240,7 +258,7 @@ async def search_papers(
     papers = (data.get("data") or [])[:limit]
     head = f"{data.get('total', 0)} results for {query!r} by {sort}; showing {len(papers)}:"
     return (
-        "\n".join([head, *map(line, papers)])
+        "\n".join([head, *map(listed, papers)])
         if papers
         else f"No results for {query!r}."
     )
@@ -313,7 +331,7 @@ async def citation_graph(
         f"; next page: offset={data['next']}" if data.get("next") else "; no more pages"
     )
     head = f"{len(papers)} {direction} of {paper_id} from offset {offset}{more}:"
-    return "\n".join([head, *map(line, papers)])
+    return "\n".join([head, *map(listed, papers)])
 
 
 if __name__ == "__main__":

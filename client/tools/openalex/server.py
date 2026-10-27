@@ -21,6 +21,7 @@ Data: OpenAlex API (https://help.openalex.org/api/), CC0.
 import asyncio
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -36,11 +37,11 @@ TIMEOUT = 30
 BUDGET_USED_UP = "OpenAlex daily budget used up, resets at midnight UTC"
 UNAVAILABLE = "OpenAlex unavailable, try Semantic Scholar"
 LIST_SELECT = (
-    "id,doi,title,publication_year,primary_location,cited_by_count,authorships,ids"
+    "id,doi,title,publication_year,primary_location,cited_by_count,authorships,ids,"
+    "abstract_inverted_index"
 )
 DETAIL_SELECT = (
-    LIST_SELECT
-    + ",publication_date,type,abstract_inverted_index,open_access,referenced_works_count"
+    LIST_SELECT + ",publication_date,type,open_access,referenced_works_count"
 )
 # Records that aren't papers: figure and movie files, supplements, datasets, front matter, reviews
 # of reviews. Left out of searches and citation lists (a filter costs nothing extra).
@@ -194,14 +195,28 @@ def line(w: dict) -> str:
     )
 
 
+def first_sentences(text: str | None) -> str:
+    """The first two sentences, at most about 450 characters, marked " …" when the text goes
+    on; "not available" when there is none (D-023)."""
+    t = " ".join((text or "").split())
+    if not t:
+        return "not available"
+    out = " ".join(re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])", t)[:2])
+    if len(out) > 450:
+        out = out[:450].rsplit(" ", 1)[0]
+    return f"{out} …" if len(out) < len(t) else out
+
+
 def listing(head: str, data: dict) -> str:
     works = data.get("results") or []
     if not works:
         return f"{head}: nothing found."
     total = (data.get("meta") or {}).get("count")
-    return "\n".join(
-        [f"{head}: {total} in total; showing {len(works)}:", *map(line, works)]
-    )
+    rows = [
+        f"{line(w)}\n  abstract: {first_sentences(abstract(w.get('abstract_inverted_index')))}"
+        for w in works
+    ]
+    return "\n".join([f"{head}: {total} in total; showing {len(works)}:", *rows])
 
 
 def date_filters(from_date: str, to_date: str) -> list[str]:

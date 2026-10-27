@@ -745,3 +745,39 @@ value such as "high" fails the whole request, and the value that works ("none") 
 server lists. A no-thinking twin of every preset: Code, Figures and Private are used less, and
 Quick already answers without thinking.
 
+## D-023: Search results carry each abstract's first sentences
+**Status:** accepted · 2026-10-27
+
+**Decision.** Every search tool returns, for each paper, `abstract:` with the first two sentences
+of its abstract (at most about 450 characters, marked `…` when it goes on), or
+`abstract: not available` when the source has none. The Research prompt summarises only from
+such text, and lists a paper whose abstract is "not available" by title and link only.
+- OpenAlex (our server): searches and citation lists select `abstract_inverted_index`. Same
+  number of requests and credits; larger responses.
+- Semantic Scholar (our server): `abstract` added to the search and citation fields. Its abstract
+  is often missing (publisher restrictions), which now shows as "not available".
+- arXiv: `tools/arxiv/patch_snippet.py` replaces the server's 280-character snippet with the
+  first two sentences at build time.
+- PubMed: `tools/pubmed/` builds on the pinned image with `patch.mjs`. `pubmed_search_articles`
+  makes one batched EFetch for the summarised PMIDs (ESummary carries no abstracts), parsed with
+  the server's own article parser; `pubmed_europepmc_search` cuts the abstract Europe PMC already
+  returns after two sentences instead of at 400 characters. That one extra request per PubMed
+  search was chosen over searching through Europe PMC, to keep PubMed's ranking (D-016).
+
+Both patches replace exact text and fail the build if it isn't found exactly once, so a version
+bump forces a review.
+
+**Why.** A test of the Research preset (2026-10-27): search results had no abstracts, so a paper
+the model never fetched looked the same as one it had, and it summarised such papers from memory
+(a wrong "audio cues" for RU-LSTM; summaries of two papers with no abstract).
+
+**Measured** (Q4 and Q5 of the six test questions, after the change): 10 papers listed; 9 had
+abstract text from a tool, and their summaries follow it, except one detail on a paper whose two
+sentences describe only the task ("imagine future frames", taken from the title). The tenth showed
+"abstract: not available" in both searches and still got a summary written from its title. All
+venues and years came from the tools. Q4: 2 tool calls, 55 s; Q5: 4 tool calls, 80 s.
+
+**Rejected.** Searching PubMed through Europe PMC: one request fewer, but a different ranking,
+untested on our queries. Full abstracts in search results: several times the response size for
+every search; `get_works` and `pubmed_fetch_articles` give them when needed.
+
