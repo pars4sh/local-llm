@@ -499,6 +499,70 @@ the only S2 client. OpenAlex stays as the fallback the Research prompt names. Me
 four still got 429 even at one request per 5 s, with the anonymous-pool message; the retries
 absorb it at a few seconds' cost. To check with Semantic Scholar if it persists.
 
+## D-017: Presets as code, applied by a script, enforced by a filter
+**Status:** accepted · 2026-10-27
+
+**Decision.** Presets (Workspace models), their system prompts, the slash prompts, the
+knowledge bases and the automations are defined in `client/presets/` (`presets.toml` plus text
+files) and applied by `client/presets/apply.py`, which creates or updates by name and never
+deletes. A global Open WebUI filter, the preset guard, enforces each preset's tools on every
+request.
+
+- **Base models by role.** A preset names a roster role (`default_model`, `task_model`);
+  `apply.py` resolves it through `cluster/roster.py`. Tool server and terminal ids come from the
+  rendered compose config, so nothing is typed twice.
+- **Authentication.** `apply.py` mints a 15-minute session token for the first admin inside the
+  Open WebUI container, with the same claims as a sign-in (including the session stamp, which
+  0.12 checks). The secret key never leaves the container and no API key exists.
+- **Why a guard.** A preset's tool list is only what the browser preselects: a chat can switch
+  on any tool server, and the selected terminal is remembered across all chats. The guard runs
+  before Open WebUI resolves tools, the terminal and feature toggles, and cuts each request to
+  the preset's grant: tool servers, terminal, web search, code interpreter, image generation,
+  and knowledge bases attached with `#` (so Private material can't be pulled into Research).
+  Browser-side tool servers are dropped. On the bare roster models, a request that reads the
+  web loses the terminal and the code interpreter. It fails closed: no policy, no request.
+- **Built-in tools.** Open WebUI 0.12 gives every model built-in tools unless switched off per
+  model. All groups that write or schedule (notes, memory, automations, calendar, skills,
+  channels, tasks, notifications, subagents) are off in every preset; a page read in Research
+  could otherwise create an automation that runs on Code with the terminal, or write a note.
+  `search_chats` is off too, so Research can't read Private chats.
+- **Knowledge bases.** One folder per base under `KNOWLEDGE_DIR`; new PDFs are uploaded by file
+  name. With native function calling the model reaches a base through its knowledge tools,
+  scoped to the bases attached to the preset. Some PDFs map digits to font glyphs that come out
+  as U+0376-U+037F ("0.90" read as "Ͷ.ͿͶ"); `apply.py` detects that and re-extracts the file
+  with Docling's full-page OCR (one of twelve papers; 38 s).
+- **Page reader hardening.** Asked to create a file, Research used the snapshot tool's
+  `filename` argument to save one inside the page-reader container. That container now has a
+  read-only root and small RAM disks for its home and `/tmp`.
+
+- **One Research preset, not two.** With seven tool servers plus web search and its knowledge
+  tools it offers about 25 tools, beyond the ~8 at which a split into "Research - biomedical"
+  and "Research - CV" was planned. Tested on seven tasks with one obvious right tool each, it
+  picked that tool every time: PubMed for Mg screw papers, Semantic Scholar then OpenAlex for
+  CVPR/ICCV/ECCV papers citing V-JEPA, arXiv for 2026 preprints, Hugging Face for V-JEPA 2
+  checkpoints, the knowledge tools for a paper in a base, `fetch_url` then the page reader for
+  a Nature article and a JavaScript-only GitHub page, web search for a software release. So it
+  stays one preset; split it if it starts picking the wrong tool. One detour: lacking paging in
+  the S2 citation tool, the model fetched the S2 API directly (keyless, so outside the key's
+  limiter); `citation_graph` now takes an offset.
+
+**Tested** (2026-10-27): `test_guard.py` (25 checks, including fail-closed); through one-off
+automations, which build requests the way the browser does: Code ran `curl` and got "Could not
+resolve host"; Code and Private, asked to search the web or open a URL, had no tool to do it and
+said so; Research with the terminal forced onto the request got no terminal and created no file
+in the sandbox folder; one knowledge-base question per base answered with the right file cited.
+Code wrote and ran a script with tests in the sandbox (the Open Terminal image has no `pytest`;
+it wrote a fallback runner and said so). Figures read a test plot's slope exactly and flagged its
+missing y label.
+
+**Rejected.**
+- Open WebUI API keys (`ENABLE_API_KEYS`): another long-lived admin credential to keep in
+  `.env`; the minted token expires in 15 minutes.
+- Clicking the presets together and exporting JSON: export/import doesn't resolve knowledge base
+  ids, roster names or tool ids on a fresh install.
+- Hiding the bare models to avoid the guard's second rule: they are useful for quick plain chats,
+  and the rule only removes acting tools when a request reads the web.
+
 ## D-018: Open WebUI runs in offline mode, without local Whisper
 **Status:** accepted · 2026-10-27
 

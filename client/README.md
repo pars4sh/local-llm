@@ -12,6 +12,7 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 | `compose.yaml` | Open WebUI, SearXNG, Docling (docling-serve), Open Terminal and the MCP tool servers: pinned tags, only Open WebUI published (on `127.0.0.1`), named volumes |
 | `searxng/settings.yml` | SearXNG config: JSON output for Open WebUI, rate limiting off for local use |
 | `tools/` | Images built here: the arXiv MCP server (no published image) and our Semantic Scholar MCP server; pinned base and pip lock files |
+| `presets/` | Presets, system prompts, slash prompts, knowledge bases and the digest automation (`presets.toml`), the preset-guard filter, and `apply.py`, which makes Open WebUI match them |
 
 ## Setup
 
@@ -131,13 +132,60 @@ for details, and only the fields it shows. It never logs the key.
 Built-in web search (SearXNG) and `fetch_url` stay as they were; the page reader is for pages
 that need JavaScript.
 
+## Presets, prompts, knowledge bases and the digest
+
+All of it lives in `presets/presets.toml` (with the texts in `presets/system/`,
+`presets/prompts/` and `presets/automations/`). After changing anything there, or after a fresh
+install, run:
+
+```
+python3 client/presets/apply.py
+```
+
+It needs the stack running and an admin account, and it uses a 15-minute token minted inside the
+Open WebUI container (no API key). It creates or updates by name and never deletes: removing a
+preset from the file leaves it in Open WebUI until you delete it there. Running it twice changes
+nothing.
+
+| Preset | Base (roster role) | Tools | Knowledge |
+|---|---|---|---|
+| Research | `default_model`, thinking on | web search, page reader, PubMed / Europe PMC, arXiv, Semantic Scholar, OpenAlex, Hugging Face | the four published-paper bases |
+| Code | `default_model` | Open Terminal (Sandbox) | none |
+| Quick | `task_model` | none | none |
+| Figures | `default_model` (vision) | none | none |
+| Private | `default_model` | none | Private (unpublished material) |
+
+**Preset guard.** A global filter (`presets/preset_guard.py`) runs before every request and
+cuts it down to what the preset is allowed: other tool servers, the terminal (which the browser
+remembers across chats), web search, the code interpreter, and knowledge bases attached in the
+chat with `#`. On the bare roster models, a request that reads the web loses the terminal and
+the code interpreter. Test it with:
+
+```
+docker exec -i local-llm-open-webui-1 python3 - < client/presets/test_guard.py
+```
+
+**Knowledge bases.** One folder per base under `KNOWLEDGE_DIR` (see `presets.toml`); `apply.py`
+uploads PDFs the base doesn't have yet, matched by file name. Docling extracts them (10 to 50 s
+per paper); hybrid search (BM25 + vectors) and reranking are on for all of them. With native
+function calling the model reads a base through its knowledge tools, so answers cite the file.
+Removing a PDF from a folder doesn't remove it from the base. If a PDF's digits come out as
+stray glyphs (some fonts map digits privately), `apply.py` re-extracts it with Docling's OCR.
+
+**Slash prompts:** `/litnote`, `/review`, `/figure`, `/commit`, `/compare`, `/related-work`.
+
+**Weekly digest.** The automation "Weekly literature digest" runs the Research preset on
+Mondays at 10:00 (the Open WebUI user's time zone) and files the chat into the "Digest" folder.
+It needs the GPU job up and the Mac awake. To test it once: `client/presets/apply.py --run
+"Weekly literature digest"`.
+
 ## Manual Open WebUI settings
 
-These can't be set through environment variables. Repeat them after a fresh install.
+These can't be set through environment variables or `apply.py`. Repeat them after a fresh install.
 
 1. **Admin account.** The first account created at `http://localhost:3000` becomes the admin.
-2. **Hide `embed` and `rerank` from the model picker.** Admin Panel → Settings → Models → for each,
-   the eye icon. They aren't chat models; Open WebUI still uses them for RAG.
+   Then run `python3 client/presets/apply.py`; it also hides `embed` and `rerank` from the model
+   picker.
 
 ## Linux and Colima
 

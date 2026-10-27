@@ -1,0 +1,146 @@
+# Open WebUI presets (Workspace models), knowledge bases, slash prompts and automations.
+# client/presets/apply.py makes Open WebUI match this file; change things here, not in the UI.
+#
+# Security (docs/architecture.md § Security, D-008, D-017): a preset that reads the web gets no
+# terminal, no code interpreter and no knowledge base of unpublished material. Every MCP tool
+# server in client/compose.yaml reads the web. The preset-guard filter enforces each preset's
+# list on every request, whatever the browser sends.
+#
+# Preset fields:
+#   base        a role from the roster's [client] table (config/models.toml), never a model name
+#   system      file in system/
+#   thinking    true/false sets enable_thinking; leave it out to keep the model's default
+#   tools       MCP server ids from TOOL_SERVER_CONNECTIONS in client/compose.yaml
+#   web_search  built-in web search and fetch_url (SearXNG)
+#   terminal    Open Terminal (the Sandbox connection)
+#   vision      image input
+#   knowledge   knowledge base names from [[knowledge]] below
+#   builtins    Open WebUI built-in tool groups to keep; all others are off
+
+[[preset]]
+id = "research"
+name = "Research"
+description = "Literature and web research with sources. No terminal."
+base = "default_model"
+system = "research.md"
+thinking = true
+tools = ["page", "pubmed", "arxiv", "s2", "openalex", "huggingface"]
+web_search = true
+terminal = false
+vision = true
+knowledge = ["Mg implant degradation", "CT-histology registration", "CT-to-histology synthesis (virtual staining)", "Video understanding & action anticipation"]
+builtins = ["web_search", "knowledge", "files"]
+
+[[preset]]
+id = "code"
+name = "Code"
+description = "Writes and runs code in the sandbox folder. No web access."
+base = "default_model"
+system = "code.md"
+tools = []
+web_search = false
+terminal = true
+vision = true
+knowledge = []
+builtins = ["files"]
+
+[[preset]]
+id = "quick"
+name = "Quick"
+description = "Fast short answers. No tools."
+base = "task_model"
+system = "quick.md"
+tools = []
+web_search = false
+terminal = false
+vision = false
+knowledge = []
+builtins = []
+
+[[preset]]
+id = "figures"
+name = "Figures"
+description = "Describes and checks figures. No tools."
+base = "default_model"
+system = "figures.md"
+tools = []
+web_search = false
+terminal = false
+vision = true
+knowledge = []
+builtins = ["files"]
+
+[[preset]]
+id = "private"
+name = "Private"
+description = "Unpublished material in its own knowledge bases. No web access."
+base = "default_model"
+system = "private.md"
+tools = []
+web_search = false
+terminal = false
+vision = true
+knowledge = ["Private"]
+builtins = ["knowledge", "files"]
+
+# Knowledge bases. `folder` is relative to KNOWLEDGE_DIR in .env; apply.py uploads the PDFs in
+# it that the base doesn't have yet (matched by file name). An empty or missing folder gives an
+# empty base. Published papers only, except in bases that only the Private preset uses.
+[[knowledge]]
+name = "Mg implant degradation"
+description = "Published papers on the in vivo degradation of magnesium implants."
+folder = "degradation"
+
+[[knowledge]]
+name = "CT-histology registration"
+description = "Published papers on registering micro-CT to histological sections."
+folder = "registration"
+
+[[knowledge]]
+name = "CT-to-histology synthesis (virtual staining)"
+description = "Published papers on virtual histological staining from CT."
+folder = "synthesis"
+
+[[knowledge]]
+name = "Video understanding & action anticipation"
+description = "Published papers on egocentric video, action anticipation and video representation learning."
+folder = "video"
+
+[[knowledge]]
+name = "Private"
+description = "Unpublished material. Attached only to the Private preset, which has no web access."
+folder = "private"
+
+# Slash prompts: /<command> in the chat box; the text is in prompts/<command>.md.
+[[prompt]]
+command = "litnote"
+name = "Literature note"
+
+[[prompt]]
+command = "review"
+name = "Review a draft"
+
+[[prompt]]
+command = "figure"
+name = "Describe and check a figure"
+
+[[prompt]]
+command = "commit"
+name = "Commit message"
+
+[[prompt]]
+command = "compare"
+name = "Compare papers"
+
+[[prompt]]
+command = "related-work"
+name = "Related work from attached papers"
+
+# Automations: run a prompt on a preset on a schedule (RFC 5545 RRULE, in the Open WebUI
+# user's time zone) and file the chat into a folder.
+[[automation]]
+name = "Weekly literature digest"
+preset = "research"
+rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0"
+folder = "Digest"
+prompt = "digest.md"

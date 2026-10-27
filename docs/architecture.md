@@ -151,10 +151,22 @@ keep reading capabilities and acting capabilities apart:
 
 | Preset | Model | Tools | Must not have |
 |---|---|---|---|
-| Research | `qwen-main`, thinking on | web search, fetch, scholarly search, knowledge bases | file write, code execution |
-| Code | `qwen-main` | Open Terminal (sandbox folder) | web search, fetch |
+| Research | `qwen-main`, thinking on | web search, fetch, page reader, PubMed / Europe PMC, arXiv, Semantic Scholar, OpenAlex, Hugging Face, the published-paper knowledge bases | file write, code execution, the Private knowledge bases |
+| Code | `qwen-main` | Open Terminal (sandbox folder) | web search, fetch, page reader, literature tools |
 | Quick | `qwen-fast` | none | |
 | Figures | `qwen-main` (vision) | none | |
+| Private | `qwen-main` | its own knowledge bases (unpublished material) | web search, fetch, page reader, literature tools |
+
+The presets are defined in `client/presets/presets.toml` and applied by
+`client/presets/apply.py`. A preset's tool list is only what the browser preselects, so a global
+filter, the preset guard, enforces the table on every request (D-017): it drops tool servers,
+the terminal, web search, the code interpreter and knowledge bases that the preset doesn't have.
+Open WebUI's other built-in tools that write (notes, memory, automations, calendar, skills) are
+off in every preset, so a page read in Research can't schedule an automation or leave
+instructions for another chat.
+
+Every MCP tool server reads the web. They run on their own Docker network with a route out,
+which only Open WebUI shares; Open Terminal and Docling stay on the internal `sandbox` network.
 
 Other rules:
 - Open Terminal sees one folder. Keep SSH keys, tokens, `.env` files and patient or medical data out of it.
