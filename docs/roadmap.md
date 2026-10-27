@@ -64,15 +64,35 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - a web search answered with citations
 - Q&A about an uploaded paper
 
-## Phase 3: Tools and presets
-- [ ] Research, Code, Quick and Figures presets, each with its system prompt and tool set
-      (see the security table in `architecture.md`).
-- [ ] Web page fetch tool.
-- [ ] Scholarly search through MCP (arXiv, Semantic Scholar or OpenAlex). Compare the candidates first.
-- [ ] One knowledge base per research topic, with hybrid search and rerank turned on.
-- [ ] Security check: no preset that reads the web has write or exec tools.
+## Phase 3: Tools and presets ✅
+Everything is in the repository and applied by `client/presets/apply.py`; nothing depends on
+settings clicked by hand (client/README.md).
+- [x] Cleanup: `OFFLINE_MODE=true`, `WHISPER_MODEL=""` (D-018); web search and the page reader
+      still work.
+- [x] JavaScript-rendering page reader (Playwright MCP) as a container (D-016).
+- [x] Literature tools through MCP, compared on six queries (three biomedical, three CV):
+      PubMed / Europe PMC, OpenAlex, arXiv, and the official Hugging Face server for models,
+      datasets and code (D-016).
+- [x] Semantic Scholar: own MCP server with one 1.1 s limiter, batch endpoint and 429 backoff,
+      because no published server met the key's terms (D-016). OpenAlex is the fallback.
+- [x] Presets Research, Code, Quick, Figures and Private, with short system prompts; the preset
+      guard enforces the security table (D-017).
+- [x] Slash prompts: `/litnote` (biomedical or CV/ML template), `/review`, `/figure`, `/commit`,
+      `/compare`, `/related-work`.
+- [x] Knowledge bases: Mg implant degradation, CT-histology registration, CT-to-histology
+      synthesis, video understanding & action anticipation, and an empty Private base; hybrid
+      search and rerank on. One question per base answered correctly with the right file
+      cited (2026-10-27). PDFs whose digits extract as stray glyphs are re-extracted with OCR.
+- [x] Weekly literature digest (automation, Mondays 10:00, Research preset, "Digest" folder),
+      with a biomedical and a CV (arXiv cs.CV) section. One-time run on 2026-10-27: 13 min,
+      34 tool calls, all six topics, filed into "Digest".
+- [x] Security check: Research can't create a file; Code and Private can't reach the web
+      (D-017: guard test plus live chats, 2026-10-27).
 
-**Done when:** each preset completes one realistic task end to end.
+**Done when:** each preset completes one realistic task end to end. Done 2026-10-27: Research
+(seven tool-choice tasks and the digest), Code (wrote, tested and ran a micro-CT volume
+script in the sandbox), Quick, Figures (read a plot's slope and flagged its missing y label),
+Private (answered from its base, refused the web).
 
 ## Phase 4: Coding agent
 - [ ] Qwen Code and/or OpenCode on the login node, pointed at the gateway with its own key.
@@ -103,6 +123,9 @@ Tick each item when it's done and verified. Every phase ends with a "done when" 
 - [ ] Do a final leak check (hostnames, usernames, paths, keys) before making the repo public.
 
 ## Later (optional)
+- Install the digest wake-up job (`client/launchd/digest-wakeup.sh`) once the checkout has moved
+  out of `~/Desktop`, which macOS doesn't let launchd jobs read (steps in client/README.md).
+- Open Terminal has no `pytest` and the sandbox can't install it; a derived image could add it.
 - Speech input (Whisper).
 - Image generation (ComfyUI), started only on demand because it competes for GPU memory.
 
