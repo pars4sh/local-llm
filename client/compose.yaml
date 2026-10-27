@@ -178,16 +178,18 @@ services:
     # limiter covers the key's 1 request/s (its citation_graph tool isn't exposed anyway).
 
   # Semantic Scholar (client/tools/semantic-scholar/server.py): one process, one limiter at
-  # one request per S2_MIN_INTERVAL seconds for every tool call and the digest, 429 backoff.
+  # one request per S2_MIN_INTERVAL seconds for every tool call and the digest, 429 backoff
+  # for at most S2_RETRY_BUDGET seconds per call, then "unavailable, try OpenAlex".
   semantic-scholar:
     build: ./tools/semantic-scholar
-    image: local-llm/s2-mcp:1
+    image: local-llm/s2-mcp:2
     restart: unless-stopped
     networks:
       - web
     environment:
       S2_API_KEY: ${S2_API_KEY:-}
       S2_MIN_INTERVAL: "1.1"
+      S2_RETRY_BUDGET: "60"
 
   # The official Hugging Face MCP server. The published image is amd64 only, so it is built
   # from the release commit (v0.4.30). Write, Jobs, Sandbox and dynamic-Space tools are

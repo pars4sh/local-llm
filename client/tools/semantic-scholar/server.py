@@ -7,7 +7,8 @@ details use the batch endpoint with only the fields that are needed.
 - One process, one asyncio limiter: all tool calls, parallel or not, and the weekly digest
   share it. Requests start at least S2_MIN_INTERVAL seconds apart (default 1.1).
 - 429 and 5xx: retry with exponential backoff (honouring Retry-After), each retry through the
-  limiter again.
+  limiter again, for at most S2_RETRY_BUDGET seconds (default 60) per tool call. Then the call
+  fails with "Semantic Scholar unavailable, try OpenAlex", so the model moves on.
 - The key comes from S2_API_KEY and is sent as x-api-key. It is never logged: httpx's request
   logging is off and errors report only the status and the path.
 
@@ -22,11 +23,13 @@ import time
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
 API = "https://api.semanticscholar.org/graph/v1"
 MIN_INTERVAL = float(os.environ.get("S2_MIN_INTERVAL", "1.1"))
-MAX_RETRIES = 5
+RETRY_BUDGET = float(os.environ.get("S2_RETRY_BUDGET", "60"))
+UNAVAILABLE = "Semantic Scholar unavailable, try OpenAlex"
 LIST_FIELDS = "title,year,venue,authors,externalIds,citationCount"
 DETAIL_FIELDS = (
     LIST_FIELDS + ",abstract,tldr,publicationDate,referenceCount,openAccessPdf"
@@ -76,7 +79,9 @@ def client() -> httpx.AsyncClient:
 
 
 async def request(method: str, path: str, **kwargs) -> dict:
-    for attempt in range(MAX_RETRIES + 1):
+    deadline = time.monotonic() + RETRY_BUDGET
+    attempt = 0
+    while True:
         await limiter.wait()
         log.info("%s %s", method, path)
         try:
@@ -95,25 +100,27 @@ async def request(method: str, path: str, **kwargs) -> dict:
                 raise RuntimeError(
                     f"Semantic Scholar answered {status} {reason} for {path}"
                 )
-        if attempt == MAX_RETRIES:
-            break
-        backoff = (
-            float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
-        )
-        backoff += random.uniform(0, 0.5)
+        # the next attempt also waits for its limiter slot, so leave room for that
+        left = deadline - time.monotonic() - limiter.interval
+        if retry_after and retry_after.isdigit():
+            backoff = float(retry_after)
+        else:
+            # shorten only our own backoff, so the last retry still fits in the budget
+            backoff = min(2**attempt + random.uniform(0, 0.5), left)
+        if backoff > left or left < 1:
+            log.warning("%s %s: %s %s, giving up", method, path, status, reason)
+            raise ToolError(UNAVAILABLE)
+        attempt += 1
         log.warning(
             "%s %s: %s %s, retry %d in %.1f s",
             method,
             path,
             status,
             reason,
-            attempt + 1,
+            attempt,
             backoff,
         )
         await asyncio.sleep(backoff)
-    raise RuntimeError(
-        f"Semantic Scholar kept refusing {path} ({status} {reason}); try again later"
-    )
 
 
 def ident(p: dict) -> str:
@@ -131,7 +138,7 @@ def ident(p: dict) -> str:
 
 def line(p: dict) -> str:
     authors = [a.get("name", "") for a in p.get("authors") or []]
-    who = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+    who = ", ".join(authors[:3]) + (" et al" if len(authors) > 3 else "")
     venue = p.get("venue") or "no venue"
     parts = [f"{p.get('title')} ({p.get('year') or 'n.d.'})", who, venue]
     return (
@@ -265,8 +272,9 @@ async def citation_graph(
 
 if __name__ == "__main__":
     log.info(
-        "Semantic Scholar MCP: key %s, min interval %.2f s",
+        "Semantic Scholar MCP: key %s, min interval %.2f s, retry budget %.0f s",
         "set" if os.environ.get("S2_API_KEY") else "not set",
         MIN_INTERVAL,
+        RETRY_BUDGET,
     )
     mcp.run(transport="streamable-http")
