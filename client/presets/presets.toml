@@ -16,6 +16,7 @@
 #   vision      image input
 #   knowledge   knowledge base names from [[knowledge]] below
 #   builtins    Open WebUI built-in tool groups to keep; all others are off
+#   like        id of another preset to copy every field from that this one doesn't set
 
 [[preset]]
 id = "research"
@@ -30,6 +31,16 @@ terminal = false
 vision = true
 knowledge = ["Mg implant degradation", "CT-histology registration", "CT-to-histology synthesis (virtual staining)", "Video understanding & action anticipation"]
 builtins = ["web_search", "knowledge", "files"]
+
+# The thinking switch (D-022): the same as Research, with thinking off. Open WebUI's per-chat
+# "Reasoning Effort" field fails the request on values the model doesn't accept, so the switch
+# is a second entry instead.
+[[preset]]
+id = "research-fast"
+like = "research"
+name = "Research (no thinking)"
+description = "Research with thinking off: faster, for simple lookups."
+thinking = false
 
 [[preset]]
 id = "code"

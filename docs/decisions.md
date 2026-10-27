@@ -724,3 +724,24 @@ Moving to 0.15.4 changed none of the 17 Python files, so no reformatting commit 
 
 **Rejected.** A ruff pin in each uv project: the client tools and presets aren't uv projects,
 and it would put the version in three places.
+
+## D-022: A thinking switch as a second preset
+**Status:** accepted · 2026-10-27
+
+**Decision.** "Research (no thinking)" (`research-fast`) is Research with `enable_thinking`
+false: same model, tools, knowledge bases and guard policy. Choosing it instead of Research in a
+new chat is the switch; `docs/guide.md` describes it. `presets.toml` gained `like = "<id>"`, so
+the twin copies Research's fields and sets only what differs.
+
+**Why.** Measured on qwen-main (Qwen3.8) through the gateway, 2026-10-27:
+- "/no_think" in the message doesn't turn thinking off (reasoning of 77 to 256 characters with
+  it, at the start or the end of the message).
+- `chat_template_kwargs: {"enable_thinking": false}`: no reasoning. This is what presets set.
+- `reasoning_effort`: "none" turns thinking off, "low" doesn't, and "minimal" and "high" fail
+  with HTTP 400 ("Supported types are xhigh (default), medium, and low").
+
+**Rejected.** Open WebUI's per-chat "Reasoning Effort" control: a free-text field, so a natural
+value such as "high" fails the whole request, and the value that works ("none") isn't one the
+server lists. A no-thinking twin of every preset: Code, Figures and Private are used less, and
+Quick already answers without thinking.
+

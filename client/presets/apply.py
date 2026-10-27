@@ -271,6 +271,22 @@ def apply_knowledge(
     return result
 
 
+def resolve_like(presets: list[dict]) -> list[dict]:
+    """A preset with like = "<id>" takes every field of that preset that it doesn't set."""
+    by_id = {p["id"]: p for p in presets}
+    out = []
+    for p in presets:
+        if "like" in p:
+            base = by_id.get(p["like"])
+            if base is None or "like" in base:
+                die(
+                    f"preset {p['id']}: like must name a preset that has no like itself"
+                )
+            p = {**base, **{k: v for k, v in p.items() if k != "like"}}
+        out.append(p)
+    return out
+
+
 def preset_meta(p: dict, kbs: dict[str, dict], terminal_id: str) -> dict:
     meta = {
         "description": p["description"],
@@ -463,6 +479,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = tomllib.loads((HERE / "presets.toml").read_text())
+    cfg["preset"] = resolve_like(cfg["preset"])
     env = read_env(REPO / ".env")
     sys.path.insert(0, str(REPO / "cluster"))
     import roster  # noqa: E402  (cluster/roster.py, stdlib only)
@@ -488,6 +505,8 @@ def main() -> None:
     apply_guard(api, cfg["preset"], servers, kbs)
     apply_presets(api, cfg["preset"], client, kbs, terminal_id)
     hide_models(api, [client["embedding_model"], client["reranking_model"]])
+    # Open WebUI caches its model list; the browser refreshes it on load, automations don't.
+    api.call("GET", "/api/models?refresh=true")
     apply_prompts(api, cfg["prompt"])
     apply_automations(api, cfg.get("automation", []), args.run)
 

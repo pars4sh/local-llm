@@ -152,6 +152,7 @@ keep reading capabilities and acting capabilities apart:
 | Preset | Model | Tools | Must not have |
 |---|---|---|---|
 | Research | `qwen-main`, thinking on | web search, fetch, page reader, PubMed / Europe PMC, arXiv, Semantic Scholar, OpenAlex, Hugging Face, the published-paper knowledge bases | file write, code execution, the Private knowledge bases |
+| Research (no thinking) | `qwen-main`, thinking off | as Research | as Research |
 | Code | `qwen-main` | Open Terminal (sandbox folder) | web search, fetch, page reader, literature tools |
 | Quick | `qwen-fast` | none | |
 | Figures | `qwen-main` (vision) | none | |

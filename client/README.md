@@ -157,6 +157,7 @@ nothing.
 | Preset | Base (roster role) | Tools | Knowledge |
 |---|---|---|---|
 | Research | `default_model`, thinking on | web search, page reader, PubMed / Europe PMC, arXiv, Semantic Scholar, OpenAlex, Hugging Face | the four published-paper bases |
+| Research (no thinking) | the same, thinking off (`like = "research"`, D-022) | as Research | as Research |
 | Code | `default_model` | Open Terminal (Sandbox) | none |
 | Quick | `task_model` | none | none |
 | Figures | `default_model` (vision) | none | none |
