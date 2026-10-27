@@ -393,6 +393,7 @@ cmd_status() {
   fi
 
   if docker_up; then echo "docker:     $(docker_usage)"; fi
+  if [[ -n ${OPENALEX_API_KEY:-} ]]; then echo "openalex:   $(openalex_budget)"; fi
 
   local models
   if ! gateway_alive; then
@@ -470,6 +471,25 @@ docker_usage() {
     "$(human "$volumes")" "$(human "$cache")"
   if raw=$(disk_image_bytes); then printf '; disk image on the Mac %s' "$(human "$raw")"; fi
   echo
+}
+
+# OpenAlex's daily budget for the key in .env. /rate-limit costs nothing; the key goes to curl on
+# stdin, so it never shows in the process list.
+openalex_budget() {
+  local body left limit reset
+  body=$(curl -fsS -m 10 -H @- https://api.openalex.org/rate-limit \
+    <<<"Authorization: Bearer $OPENALEX_API_KEY" 2>/dev/null) || {
+    echo "no answer"
+    return
+  }
+  left=$(sed -n 's/.*"credits_remaining":\([0-9]*\).*/\1/p' <<<"$body")
+  limit=$(sed -n 's/.*"credits_limit":\([0-9]*\).*/\1/p' <<<"$body")
+  reset=$(sed -n 's/.*"resets_in_seconds":\([0-9]*\).*/\1/p' <<<"$body")
+  [[ -n $left && -n $limit && -n $reset ]] || {
+    echo "budget unknown"
+    return
+  }
+  echo "$left of $limit credits left today, resets in $((reset / 3600)) h $((reset % 3600 / 60)) min (midnight UTC)"
 }
 
 # Images the stack needs: what compose.yaml runs, the bases of the images it builds (so they

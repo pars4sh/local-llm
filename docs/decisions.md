@@ -455,7 +455,7 @@ allowlist) exposes only reading tools. No server needed mcpo: all chosen ones sp
 |---|---|---|---|
 | `page` | Playwright MCP, `mcr.microsoft.com/playwright/mcp` | v0.0.83 (2026-10-09) | Official, Apache-2.0, arm64. Renders JavaScript (a Nature article came back as a 100k-character accessibility snapshot). Of its 25 tools only navigate, snapshot, find and wait are exposed; `browser_run_code_unsafe`, `browser_evaluate`, forms and file upload are not. Fresh in-memory profile (`--isolated`); the stack's own origins are blocked. |
 | `pubmed` | cyanheads/pubmed-mcp-server | 2.10.22 (2026-10-12) | Best precision: 10/10 relevant on the Mg query, 8/10 on registration, both exact hits on virtual staining, in about 1 s. Also Europe PMC search and PMC full text. Apache-2.0, released weekly. |
-| `openalex` | cyanheads/openalex-mcp-server | 0.9.0 (2026-10-18) | Same top 10 as paper-search-mcp (same API) but with citation counts, venues, DOIs and a citation-graph tool. Finds conference papers: ICCV, CVPR, NeurIPS, AAAI and WACV all showed up on the CV queries. Apache-2.0. |
+| `openalex` | ~~cyanheads/openalex-mcp-server 0.9.0~~; since the update below our own, `client/tools/openalex/server.py` | — | Chosen first for citation counts, venues, DOIs and a citation-graph tool; it finds conference papers (ICCV, CVPR, NeurIPS, AAAI, WACV). Replaced on 2026-10-27, see "Update: OpenAlex becomes the primary source". |
 | `arxiv` | blazickjp/arxiv-mcp-server | 0.8.2 (PyPI, 2026-10-08) | The only arXiv candidate without junk: the other two pass words to arXiv loosely and returned gamma-ray bursts and exoplanet ice for the registration query. Best on all three CV queries (V-JEPA first for the JEPA query). Apache-2.0, 3.2k stars. No image: built from `client/tools/arxiv/` (pinned base, pip lock). |
 | `huggingface` | huggingface/hf-mcp-server (official) | v0.4.30 (2026-10-13) | Official; replaces Papers with Code: repo search, repo details, and `hf_fs` for papers (with linked models and datasets) and docs. The published image is amd64 only, so it is built from the release commit. `DISABLE_TOOLS` removes repo creation, file writes, Jobs, Sandboxes and dynamic Spaces; the allowlist also keeps out Space tools the account adds (one image-generation Space was there by default). `HF_TOKEN` should be read-only. |
 
@@ -478,6 +478,55 @@ the relevance of the top 10, then maintenance and licence.
   (above).
 - Page reader: Crawl4AI 0.9.5: 10.8 GB image (with stray QEMU core dumps) and MCP only over SSE
   and WebSocket.
+
+**Update: OpenAlex becomes the primary source** (2026-10-27). Semantic Scholar refuses about
+half of this key's requests (D-019; their API Gateway throttling, the key is fine), so OpenAlex
+now answers general search, citation counts and citation graphs, and Semantic Scholar is
+secondary: CS conference papers and finding one paper by title, with its retry budget cut from
+60 to 20 s.
+
+The OpenAlex server is our own, `client/tools/openalex/server.py` (same pinned base and
+dependencies as the S2 one), written to the API docs (help.openalex.org: authentication, errors,
+searching, LLM quick reference):
+- The key goes in `Authorization: Bearer`, never in the URL, and is never logged.
+- Cheap calls first. Costs measured with the free key ($1/day = 10,000 credits, reset at midnight
+  UTC): `search_works` 10 credits, with `best_match` (rerank) 20; `get_works` for one work 0
+  (singleton), for up to 100 ids 1 per id kind (ids joined by `|`); `citation_graph` 1
+  (`cites:` / `cited_by:` filters); `find_entity` 10. Searches ask for 5 to 25 results and only
+  the fields shown (`select=`). Authors, institutions, journals and topics are filtered by id
+  (`find_entity` first), never by name. Records that aren't papers (types other,
+  supplementary-materials, dataset, paratext, peer-review: movie files, supplements) are
+  filtered out of searches and citation lists.
+- Requests start at most 25/s (the key allows 30/s). 429, 5xx and timeouts: 5 tries, waits of
+  1, 2, 4 and 8 s, 30 s per request. A 429 with `not_enough_credits` is never retried; the tool
+  says "OpenAlex daily budget used up, resets at midnight UTC". Tested against a mock: no retry,
+  key not in the URL, Bearer header sent; plain 429 and 503 give up after 15 s and 5 tries.
+- Every request logs its credits and `X-RateLimit-Remaining`; `llm status` shows the day's
+  remaining budget from `/rate-limit` (free).
+- `corpus=all` stays off: on the six queries it added 2 to 21 hits, the same top 5 on five of
+  them, and on the sixth one relevant preprint (EgoDTM), twice. `OPENALEX_CORPUS=all` turns
+  it on.
+
+The six queries, top 5 each: OpenAlex found the expected papers for all six (Fischerauer et al.
+and the MgBone project for Mg degradation; Museyko et al. for registration; the 3D X-ray
+virtual-staining preprint; Rolling-Unrolling LSTMs and follow-ups; V-JEPA first for JEPA; recent
+egocentric 3D papers), in 0.3 to 0.9 s each, 60 credits in all, no 429. Semantic Scholar on the
+same six (relevance, 3 each): good on five, nothing for the registration query; 10 requests,
+4 × 429, no call gave up.
+
+**Rejected for OpenAlex.**
+- cyanheads/openalex-mcp-server 0.9.0: sends the key as an `api_key` query parameter (redacted
+  only from error text). Its container had also been started before the key was added, so it
+  ran keyless: two runs of the six queries used 0 of our credits.
+- The official server, ourresearch/openalex-mcp-server (MIT, commit 4296c8f of 2026-10-26, no
+  release tags): it runs only as a Cloudflare Worker whose `/mcp` requires an OAuth grant from
+  openalex.org; running it on our key took a wrapper of our own around its `createServer` and an
+  esbuild bundle, which upstream doesn't support. Compared that way on the six queries: with
+  its default rerank, the best ranking on the CV queries, but 20 credits per search; with
+  `rerank=false`, nearly the same top 5 as cyanheads (same API). It retries a 429 once within
+  3 s, treats every longer 429 as budget used up, doesn't log the remaining budget, and always
+  registers `claim_author_profile` and `submit_curations` (which an allowlist would have to keep
+  off). Not better at the settings we want, and not self-hostable as published.
 
 **Semantic Scholar** (`s2`, added the same day once a key was available). Written here,
 `client/tools/semantic-scholar/server.py` (about 200 lines on the pinned MCP SDK), because no

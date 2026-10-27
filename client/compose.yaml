@@ -92,11 +92,11 @@ services:
                    "description": "Biomedical literature: PubMed, PMC and Europe PMC"},
           "config": {"enable": true,
                      "function_name_filter_list": "pubmed_search_articles,pubmed_fetch_articles,pubmed_fetch_fulltext,pubmed_europepmc_search"}},
-         {"type": "mcp", "url": "http://openalex:3010/mcp", "auth_type": "none",
+         {"type": "mcp", "url": "http://openalex:8000/mcp", "auth_type": "none",
           "info": {"id": "openalex", "name": "OpenAlex",
-                   "description": "Scholarly works across all fields, citation counts and citation graph"},
+                   "description": "Primary scholarly search across all fields, citation counts and citation graph"},
           "config": {"enable": true,
-                     "function_name_filter_list": "openalex_search_entities,openalex_get_citation_graph"}},
+                     "function_name_filter_list": "search_works,get_works,citation_graph,find_entity"}},
          {"type": "mcp", "url": "http://arxiv:8000/mcp", "auth_type": "none",
           "info": {"id": "arxiv", "name": "arXiv",
                    "description": "arXiv preprints: search, abstracts and full text"},
@@ -156,17 +156,17 @@ services:
       NCBI_ADMIN_EMAIL: ${LITERATURE_CONTACT_EMAIL:-}
       EUROPEPMC_EMAIL: ${LITERATURE_CONTACT_EMAIL:-}
 
+  # OpenAlex (client/tools/openalex/server.py), the primary literature source: key as a Bearer
+  # header, cheap calls first, retries on 429/5xx but never on "not_enough_credits".
   openalex:
-    image: ghcr.io/cyanheads/openalex-mcp-server:0.9.0
+    build: ./tools/openalex
+    image: local-llm/openalex-mcp:1
     restart: unless-stopped
     networks:
       - web
     environment:
-      MCP_TRANSPORT_TYPE: http
-      MCP_HTTP_HOST: 0.0.0.0
-      MCP_HTTP_PORT: "3010"
       OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
-      OPENALEX_MAILTO: ${LITERATURE_CONTACT_EMAIL:-}
+      OPENALEX_MAX_RPS: "25"
 
   arxiv:
     build: ./tools/arxiv

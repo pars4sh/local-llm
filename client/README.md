@@ -39,7 +39,7 @@ Python 3.11 or newer must be on `PATH` (`compose.sh` reads the roster). `llm` ru
 |---|---|
 | `llm up [--no-open]` | Reuses my running or pending serving job (job name from `cluster/serve.sbatch`), or submits one through `cluster/submit.sh` on the cluster. Shows pending, starting, ready; waits up to `LLM_QUEUE_TIMEOUT` (1800 s) in the queue and `LLM_START_TIMEOUT` (900 s) for startup, and on failure prints the job ID and the tail of its log. Then starts the tunnel and the containers (both skipped if already up), checks `/v1/models` through the tunnel, prints `Ready: http://localhost:3000` and opens the browser. |
 | `llm down [--keep-ui]` | Cancels my serving jobs (only those with the project's job name), stops the tunnel and stops the containers. Volumes are never removed. `--keep-ui` leaves Open WebUI running, to read old chats. |
-| `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, Docker's disk use (and what its disk image takes on the Mac), and whether the gateway answers with the client key |
+| `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, Docker's disk use (and what its disk image takes on the Mac), OpenAlex's budget left today, and whether the gateway answers with the client key |
 | `llm backup` | Backs up the Open WebUI volume to `BACKUP_DIR`, keeping the last 8 |
 | `llm clean [--yes]` | Lists what Docker holds that the stack doesn't use, with sizes: stopped containers of other projects, unused images, dangling volumes, the build cache. Deletes only with `--yes`. Never touches the stack's volumes or the images it needs (compose images, their build bases, the backup image, `LLM_CLEAN_KEEP`). D-020 |
 
@@ -119,13 +119,16 @@ server's reading tools. The comparison behind the choices is D-016.
 |---|---|---|---|
 | `page` | Playwright MCP (headless Chromium) | `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_wait_for` | |
 | `pubmed` | cyanheads/pubmed-mcp-server | PubMed search and fetch, PMC full text, Europe PMC search | `NCBI_API_KEY` |
-| `openalex` | cyanheads/openalex-mcp-server | works search, citation graph | `OPENALEX_API_KEY` |
+| `openalex` | our own (`tools/openalex/server.py`), the primary source | `search_works`, `get_works`, `citation_graph`, `find_entity` | `OPENALEX_API_KEY` (sent as `Authorization: Bearer`) |
 | `arxiv` | blazickjp/arxiv-mcp-server (built in `tools/arxiv/`) | search, abstract, full text, outline and sections | |
 | `s2` | our own (`tools/semantic-scholar/server.py`) | `search_papers`, `get_papers` (batch), `citation_graph` | `S2_API_KEY` (sent as `x-api-key`) |
 | `huggingface` | huggingface/hf-mcp-server (built from the release commit) | `hub_repo_search`, `hub_repo_details`, `hf_fs` (papers, docs, files) | `HF_TOKEN` (read-only) |
 
-`LITERATURE_CONTACT_EMAIL` is sent to NCBI, Europe PMC and OpenAlex, which ask clients for a
-contact. Without keys everything works at the anonymous rate limits; Semantic Scholar's keyless
+`LITERATURE_CONTACT_EMAIL` is sent to NCBI and Europe PMC, which ask clients for a contact.
+OpenAlex is the primary literature source: its server spends the key's daily budget (free key:
+$1 = 10,000 credits, reset at midnight UTC; a search costs 10, a reranked best-match search 20,
+a known work 0, a batch or a citation list 1), never retries "not_enough_credits", and logs
+`X-RateLimit-Remaining`; `llm status` shows what is left today (D-016). Without keys everything works at the anonymous rate limits; Semantic Scholar's keyless
 pool is shared with everyone. The Semantic Scholar server is the only client of the S2 key:
 one process, one limiter (a request every `S2_MIN_INTERVAL` = 1.1 s, below the key's 1/s across
 all endpoints) for every tool call and the digest, backoff and retry on 429 for at most

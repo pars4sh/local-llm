@@ -64,6 +64,13 @@ are done. All site-specific settings will live in `.env`; see [.env.example](.en
 The Research preset's literature search uses these services through MCP tool servers
 (`client/compose.yaml`, D-016):
 
+- **OpenAlex.** The primary literature source is the [OpenAlex API](https://openalex.org)
+  (data CC0). OpenAlex asks users to cite:
+
+  > Jason Priem, Heather Piwowar, Richard Orr. *OpenAlex: A fully-open index of scholarly
+  > works, authors, venues, institutions, and concepts.* arXiv:2205.01833, 2022.
+  > https://arxiv.org/abs/2205.01833
+
 - **Semantic Scholar.** Literature search uses the
   [Semantic Scholar API](https://www.semanticscholar.org/product/api). Results that use it
   should cite:
@@ -72,8 +79,8 @@ The Research preset's literature search uses these services through MCP tool ser
   > *The Semantic Scholar Open Data Platform.* arXiv:2301.10140, 2023.
   > https://arxiv.org/abs/2301.10140
 
-- PubMed, PubMed Central and Europe PMC (NCBI E-utilities, Europe PMC REST API), OpenAlex,
-  arXiv and the Hugging Face Hub.
+- PubMed, PubMed Central and Europe PMC (NCBI E-utilities, Europe PMC REST API), arXiv and
+  the Hugging Face Hub.
 
 ## License
 
