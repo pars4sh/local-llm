@@ -64,8 +64,9 @@ Check which machine you're on before running anything:
 
 ## Verifying changes
 
-- Shell: `shellcheck` and `bash -n` on every changed `.sh` or `.sbatch` file.
-- Python: `ruff check` and `ruff format --check`.
+- Shell and Python: `scripts/lint.sh` (`--fix` to apply ruff's fixes and formatting). It pins
+  ruff and shellcheck and runs `shellcheck`, `bash -n`, `ruff check` and `ruff format --check`
+  on the whole repo.
 - Gateway: `uv run --project gateway pytest gateway/tests` after any change in `gateway/` or a LiteLLM upgrade.
 - Compose (laptop only): `client/compose.sh config --quiet`.
 - Serving: run `cluster/smoke_test.sh` against a live job. It covers gateway auth, text, an image,

@@ -709,3 +709,18 @@ a manual compaction.
 **Rejected.** `docker system prune -a`: it would also delete the backup image and the build
 bases, and anything of other projects. Cleaning automatically in `llm down`: deletes should be
 seen first. Slim images: see above.
+
+## D-021: Lint tools pinned in one script
+**Status:** accepted · 2026-10-27
+
+**Decision.** `scripts/lint.sh` pins ruff 0.15.4 and shellcheck v0.11.0 and runs `shellcheck -x`,
+`bash -n`, `ruff check` and `ruff format --check` over the repo (`--fix` applies ruff's fixes).
+On the laptop it uses the tools' Docker images; elsewhere `uvx ruff@0.15.4` and a shellcheck on
+PATH, which must be the pinned version. `llm clean` keeps exactly these two images. The later CI
+step (roadmap) should call the same script.
+
+**Why.** Nothing pinned them before; code had been formatted with ruff 0.14.0 from an image.
+Moving to 0.15.4 changed none of the 17 Python files, so no reformatting commit was needed.
+
+**Rejected.** A ruff pin in each uv project: the client tools and presets aren't uv projects,
+and it would put the version in three places.

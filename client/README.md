@@ -41,7 +41,7 @@ Python 3.11 or newer must be on `PATH` (`compose.sh` reads the roster). `llm` ru
 | `llm down [--keep-ui]` | Cancels my serving jobs (only those with the project's job name), stops the tunnel and stops the containers. Volumes are never removed. `--keep-ui` leaves Open WebUI running, to read old chats. |
 | `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, Docker's disk use (and what its disk image takes on the Mac), OpenAlex's budget left today, and whether the gateway answers with the client key |
 | `llm backup` | Backs up the Open WebUI volume to `BACKUP_DIR`, keeping the last 8 |
-| `llm clean [--yes]` | Lists what Docker holds that the stack doesn't use, with sizes: stopped containers of other projects, unused images, dangling volumes, the build cache. Deletes only with `--yes`. Never touches the stack's volumes or the images it needs (compose images, their build bases, the backup image, `LLM_CLEAN_KEEP`). D-020 |
+| `llm clean [--yes]` | Lists what Docker holds that the stack doesn't use, with sizes: stopped containers of other projects, unused images, dangling volumes, the build cache. Deletes only with `--yes`. Never touches the stack's volumes or the images it needs (compose images, their build bases, the backup image, the lint images pinned in `scripts/lint.sh`, `LLM_CLEAN_KEEP`). D-020 |
 
 The tunnel runs in the background; its log is `~/.local/state/local-llm/tunnel.log`.
 `client/tunnel.sh` and `client/compose.sh` still work on their own.

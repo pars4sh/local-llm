@@ -493,11 +493,14 @@ openalex_budget() {
 }
 
 # Images the stack needs: what compose.yaml runs, the bases of the images it builds (so they
-# rebuild offline), the backup image, and anything listed in LLM_CLEAN_KEEP.
+# rebuild offline), the backup image, the lint images pinned in scripts/lint.sh, and anything
+# listed in LLM_CLEAN_KEEP.
 keep_images() {
   compose config --images
   sed -n 's/^FROM \([^ ]*\).*/\1/p' "$REPO"/client/tools/*/Dockerfile
   echo "$BACKUP_IMAGE"
+  sed -n 's/^RUFF_VERSION=/ghcr.io\/astral-sh\/ruff:/p; s/^SHELLCHECK_VERSION=/koalaman\/shellcheck:/p' \
+    "$REPO/scripts/lint.sh"
   local i
   for i in ${LLM_CLEAN_KEEP:-}; do echo "$i"; done
 }
