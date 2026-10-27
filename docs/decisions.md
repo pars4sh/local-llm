@@ -789,3 +789,21 @@ the abstract before relying on a detail.
 untested on our queries. Full abstracts in search results: several times the response size for
 every search; `get_works` and `pubmed_fetch_articles` give them when needed.
 
+
+## D-024: No AI attribution in commits; history rewritten twice
+**Status:** accepted · 2026-10-27
+
+**Decision.** Commits and pull requests carry no AI attribution: `.claude/settings.json` sets
+`attribution` to `{"commit": "", "pr": "", "sessionUrl": false}` (all three keys: empty `commit`
+and `pr` alone still leave the session link). Every commit is authored by the maintainer's own
+identity, and each checkout sets `user.name` and `user.email` explicitly.
+
+**History rewritten** (same day, before publishing more):
+1. 22 commits made on the laptop had git's automatic author address, which contains the
+   laptop's username and hostname; they were re-authored with the maintainer's identity.
+2. With git filter-repo 2.47.0: the `Co-Authored-By` and session-link lines were dropped from
+   23 commit messages (35 lines), and the scaffold commit's author and committer were set to the
+   maintainer's identity.
+
+Both rewrites left every commit's tree and author date unchanged. Anyone with an older clone
+should re-clone.
