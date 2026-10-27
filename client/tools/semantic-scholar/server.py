@@ -11,7 +11,7 @@ details use the batch endpoint with only the fields that are needed.
 - One process, one asyncio limiter: all tool calls, parallel or not, and the weekly digest
   share it. Requests start at least S2_MIN_INTERVAL seconds apart (default 1.1).
 - 429 and 5xx: retry with exponential backoff (honouring Retry-After), each retry through the
-  limiter again, for at most S2_RETRY_BUDGET seconds (default 60) per tool call. Then the call
+  limiter again, for at most S2_RETRY_BUDGET seconds (default 20) per tool call. Then the call
   fails with "Semantic Scholar unavailable, try OpenAlex", so the model moves on.
 - The key comes from S2_API_KEY and is sent as x-api-key. It is never logged: httpx's request
   logging is off and errors report only the status and the path. Each 429 is logged with its
@@ -34,7 +34,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 API = "https://api.semanticscholar.org/graph/v1"
 MIN_INTERVAL = float(os.environ.get("S2_MIN_INTERVAL", "1.1"))
-RETRY_BUDGET = float(os.environ.get("S2_RETRY_BUDGET", "60"))
+RETRY_BUDGET = float(os.environ.get("S2_RETRY_BUDGET", "20"))
 UNAVAILABLE = "Semantic Scholar unavailable, try OpenAlex"
 SEARCH_FIELDS = "title,year,publicationDate,venue,externalIds,citationCount"
 DETAIL_FIELDS = SEARCH_FIELDS + ",authors,abstract,tldr,referenceCount,openAccessPdf"
@@ -184,8 +184,8 @@ security = TransportSecuritySettings(
 )
 mcp = FastMCP(
     "semantic-scholar",
-    instructions="Semantic Scholar: papers across all fields, including CS conference papers, "
-    "with citation counts and citation graphs. Requests are rate limited; ask for what you need.",
+    instructions="Semantic Scholar, a secondary source: CS conference papers and finding one "
+    "paper by title. Requests are rate limited and often refused; OpenAlex is the primary source.",
     host="0.0.0.0",
     port=8000,
     transport_security=security,

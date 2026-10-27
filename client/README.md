@@ -121,7 +121,7 @@ server's reading tools. The comparison behind the choices is D-016.
 | `pubmed` | cyanheads/pubmed-mcp-server | PubMed search and fetch, PMC full text, Europe PMC search | `NCBI_API_KEY` |
 | `openalex` | our own (`tools/openalex/server.py`), the primary source | `search_works`, `get_works`, `citation_graph`, `find_entity` | `OPENALEX_API_KEY` (sent as `Authorization: Bearer`) |
 | `arxiv` | blazickjp/arxiv-mcp-server (built in `tools/arxiv/`) | search, abstract, full text, outline and sections | |
-| `s2` | our own (`tools/semantic-scholar/server.py`) | `search_papers`, `get_papers` (batch), `citation_graph` | `S2_API_KEY` (sent as `x-api-key`) |
+| `s2` | our own (`tools/semantic-scholar/server.py`), secondary: CS conference papers, one paper by title | `search_papers`, `get_papers` (batch), `citation_graph` | `S2_API_KEY` (sent as `x-api-key`) |
 | `huggingface` | huggingface/hf-mcp-server (built from the release commit) | `hub_repo_search`, `hub_repo_details`, `hf_fs` (papers, docs, files) | `HF_TOKEN` (read-only) |
 
 `LITERATURE_CONTACT_EMAIL` is sent to NCBI and Europe PMC, which ask clients for a contact.
@@ -132,7 +132,7 @@ a known work 0, a batch or a citation list 1), never retries "not_enough_credits
 pool is shared with everyone. The Semantic Scholar server is the only client of the S2 key:
 one process, one limiter (a request every `S2_MIN_INTERVAL` = 1.1 s, below the key's 1/s across
 all endpoints) for every tool call and the digest, backoff and retry on 429 for at most
-`S2_RETRY_BUDGET` = 60 s per call (then "Semantic Scholar unavailable, try OpenAlex"), bulk
+`S2_RETRY_BUDGET` = 20 s per call (then "Semantic Scholar unavailable, try OpenAlex"), bulk
 search for searches, the batch endpoint for details, and only the fields it shows. It never
 logs the key; each 429 is logged with endpoint, body and headers (D-019).
 

@@ -104,7 +104,7 @@ services:
                      "function_name_filter_list": "search_papers,get_abstract,download_paper,read_paper_section,get_paper_outline"}},
          {"type": "mcp", "url": "http://semantic-scholar:8000/mcp", "auth_type": "none",
           "info": {"id": "s2", "name": "Semantic Scholar",
-                   "description": "Papers in all fields incl. CS conferences, citation counts and graph"},
+                   "description": "Secondary: CS conference papers and best-match lookups of one paper"},
           "config": {"enable": true,
                      "function_name_filter_list": "search_papers,get_papers,citation_graph"}},
          {"type": "mcp", "url": "http://huggingface:3000/mcp", "auth_type": "bearer",
@@ -182,14 +182,14 @@ services:
   # for at most S2_RETRY_BUDGET seconds per call, then "unavailable, try OpenAlex".
   semantic-scholar:
     build: ./tools/semantic-scholar
-    image: local-llm/s2-mcp:2
+    image: local-llm/s2-mcp:3
     restart: unless-stopped
     networks:
       - web
     environment:
       S2_API_KEY: ${S2_API_KEY:-}
       S2_MIN_INTERVAL: "1.1"
-      S2_RETRY_BUDGET: "60"
+      S2_RETRY_BUDGET: "20"
 
   # The official Hugging Face MCP server. The published image is amd64 only, so it is built
   # from the release commit (v0.4.30). Write, Jobs, Sandbox and dynamic-Space tools are

@@ -637,7 +637,8 @@ missing y label.
   or the few closest matches.
 - Searches request only flat fields (title, year, date, venue, ids, citation count); authors,
   abstracts and TL;DRs come from `get_papers` (`POST /paper/batch`).
-- Retries stop after `S2_RETRY_BUDGET` (60 s) per tool call, and the call fails with
+- Retries stop after `S2_RETRY_BUDGET` (60 s; 20 s since OpenAlex became primary, D-016) per
+  tool call, and the call fails with
   "Semantic Scholar unavailable, try OpenAlex". The Research prompt then sends the same search,
   citation counts and citation graph to OpenAlex. Measured against a mock that always answers
   429: 7 attempts, gives up at 58.9 s.
