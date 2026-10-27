@@ -169,6 +169,9 @@ Quick can't read images.
 3. Click each paper's link or **DOI** (a permanent ID for a paper) to check it before you use
    it. The assistant is told never to invent references and to say when it is unsure, but it can
    still describe a paper inaccurately.
+4. Treat each summary as a pointer, not as the paper: it is written from the first sentences
+   of the abstract. Before you rely on a detail, such as a number, a dataset or a method, open
+   the link and check the abstract.
 
 Tip: if you know the exact title of one paper, ask for that title; it finds it faster.
 

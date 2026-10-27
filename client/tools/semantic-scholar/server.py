@@ -175,10 +175,10 @@ def line(p: dict) -> str:
 
 def first_sentences(text: str | None) -> str:
     """The first two sentences, at most about 450 characters, marked " …" when the text goes
-    on; "not available" when there is none (D-023)."""
+    on; "not available - list by title and link only" when there is none (D-023)."""
     t = " ".join((text or "").split())
     if not t:
-        return "not available"
+        return "not available - list by title and link only"
     out = " ".join(re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])", t)[:2])
     if len(out) > 450:
         out = out[:450].rsplit(" ", 1)[0]
@@ -293,7 +293,7 @@ async def get_papers(ids: list[str]) -> str:
                         f"TL;DR: {tldr}" if tldr else None,
                         f"Abstract: {p.get('abstract')}"
                         if p.get("abstract")
-                        else "No abstract available.",
+                        else "abstract: not available - list by title and link only",
                         f"Open-access PDF: {pdf}" if pdf else None,
                     ],
                 )

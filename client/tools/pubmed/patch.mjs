@@ -1,5 +1,5 @@
 // Build-time patch of cyanheads/pubmed-mcp-server 2.10.22 (D-023): search results carry the first
-// two sentences of each abstract, or "abstract: not available".
+// two sentences of each abstract, or "abstract: not available - list by title and link only".
 // - pubmed_search_articles: one batched EFetch for the summarised PMIDs (ESummary has no
 //   abstracts), parsed with the server's own article parser.
 // - pubmed_europepmc_search: the snippet Europe PMC already returns, cut after two sentences
@@ -70,7 +70,7 @@ patch('search-articles.tool.js', [
   [
     "                if (s.pmcUrl)\n                    lines.push(`**PMC:** ${s.pmcUrl}`);\n",
     "                if (s.pmcUrl)\n                    lines.push(`**PMC:** ${s.pmcUrl}`);\n" +
-      "                lines.push(`**abstract:** ${s.abstract || 'not available'}`);\n",
+      "                lines.push(`**abstract:** ${s.abstract || 'not available - list by title and link only'}`);\n",
   ],
 ]);
 
@@ -86,6 +86,6 @@ patch('pubmed-europepmc-search.tool.js', [
   ],
   [
     '                if (h.abstractSnippet) {\n                    lines.push(`\\n${h.abstractSnippet}`);\n                    if (h.abstractTruncated) {\n                        lines.push(`_Abstract truncated at ${ABSTRACT_SNIPPET_LIMIT} characters — pass this hit to \\`pubmed_europepmc_fetch\\` as \\`records: [{ source, epmcId }]\\` for the complete text._`);\n                    }\n                }\n',
-    '                lines.push(`**abstract:** ${h.abstractSnippet || \'not available\'}`);\n                if (h.abstractTruncated) {\n                    lines.push(`_First sentences only — pass this hit to \\`pubmed_europepmc_fetch\\` as \\`records: [{ source, epmcId }]\\` for the complete abstract._`);\n                }\n',
+    '                lines.push(`**abstract:** ${h.abstractSnippet || \'not available - list by title and link only\'}`);\n                if (h.abstractTruncated) {\n                    lines.push(`_First sentences only — pass this hit to \\`pubmed_europepmc_fetch\\` as \\`records: [{ source, epmcId }]\\` for the complete abstract._`);\n                }\n',
   ],
 ]);

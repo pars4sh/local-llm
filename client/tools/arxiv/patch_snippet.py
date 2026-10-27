@@ -1,5 +1,5 @@
 """Build-time patch of arxiv-mcp-server 0.8.2 (D-023): search results carry the first two
-sentences of each abstract instead of its first 280 characters, or "not available".
+sentences of each abstract instead of its first 280 characters, or "not available - list by title and link only".
 
 The replacement must match exactly once, or the build fails: a new upstream version needs this
 file reviewed.
@@ -22,7 +22,7 @@ NEW = """    # local-llm patch (D-023): the first two sentences, at most about 4
 
     text = " ".join((abstract or "").split())
     if not text:
-        return "not available"
+        return "not available - list by title and link only"
     out = " ".join(re.split(r"(?<=[.!?])\\s+(?=[A-Z0-9(\\[])", text)[:2])
     if len(out) > 450:
         out = out[:450].rsplit(" ", 1)[0]

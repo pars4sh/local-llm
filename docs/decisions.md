@@ -777,6 +777,14 @@ sentences describe only the task ("imagine future frames", taken from the title)
 "abstract: not available" in both searches and still got a summary written from its title. All
 venues and years came from the tools. Q4: 2 tool calls, 55 s; Q5: 4 tool calls, 80 s.
 
+**Follow-up** (same day): the missing-abstract line now says what to do,
+"abstract: not available - list by title and link only", in all search tools and in
+`get_works`/`get_papers`. Q4 rerun: the paper without an abstract was listed by title and link
+only. One summary borrowed a number from another paper's abstract ("more than 2500 actions",
+action classes in the RU-LSTM abstract, given as annotated actions of the 2018 EPIC-KITCHENS
+paper). Tuning stops here; `docs/guide.md` tells users to treat summaries as pointers and check
+the abstract before relying on a detail.
+
 **Rejected.** Searching PubMed through Europe PMC: one request fewer, but a different ranking,
 untested on our queries. Full abstracts in search results: several times the response size for
 every search; `get_works` and `pubmed_fetch_articles` give them when needed.

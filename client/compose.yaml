@@ -146,7 +146,7 @@ services:
     # cyanheads/pubmed-mcp-server 2.10.22 with a build-time patch: search results carry each
     # abstract's first two sentences (D-023).
     build: ./tools/pubmed
-    image: local-llm/pubmed-mcp:2.10.22-1
+    image: local-llm/pubmed-mcp:2.10.22-2
     restart: unless-stopped
     networks:
       - web
@@ -163,7 +163,7 @@ services:
   # header, cheap calls first, retries on 429/5xx but never on "not_enough_credits".
   openalex:
     build: ./tools/openalex
-    image: local-llm/openalex-mcp:2
+    image: local-llm/openalex-mcp:3
     restart: unless-stopped
     networks:
       - web
@@ -173,7 +173,7 @@ services:
 
   arxiv:
     build: ./tools/arxiv
-    image: local-llm/arxiv-mcp:0.8.2-1
+    image: local-llm/arxiv-mcp:0.8.2-2
     restart: unless-stopped
     networks:
       - web
@@ -185,7 +185,7 @@ services:
   # for at most S2_RETRY_BUDGET seconds per call, then "unavailable, try OpenAlex".
   semantic-scholar:
     build: ./tools/semantic-scholar
-    image: local-llm/s2-mcp:4
+    image: local-llm/s2-mcp:5
     restart: unless-stopped
     networks:
       - web

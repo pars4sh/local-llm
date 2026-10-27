@@ -197,10 +197,10 @@ def line(w: dict) -> str:
 
 def first_sentences(text: str | None) -> str:
     """The first two sentences, at most about 450 characters, marked " …" when the text goes
-    on; "not available" when there is none (D-023)."""
+    on; "not available - list by title and link only" when there is none (D-023)."""
     t = " ".join((text or "").split())
     if not t:
-        return "not available"
+        return "not available - list by title and link only"
     out = " ".join(re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])", t)[:2])
     if len(out) > 450:
         out = out[:450].rsplit(" ", 1)[0]
@@ -343,7 +343,9 @@ async def get_works(ids: list[str]) -> str:
                         line(w)[2:],
                         f"Published: {w.get('publication_date')}. Type: {w.get('type')}. "
                         f"References: {w.get('referenced_works_count')}.",
-                        f"Abstract: {text}" if text else "No abstract available.",
+                        f"Abstract: {text}"
+                        if text
+                        else "abstract: not available - list by title and link only",
                         f"Open access: {oa}" if oa else None,
                     ],
                 )
