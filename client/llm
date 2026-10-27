@@ -8,6 +8,8 @@
 #                              (--keep-ui: leave Open WebUI running to read old chats)
 #        llm status            job, tunnel, containers and gateway at a glance
 #        llm backup            back up the Open WebUI volume to $BACKUP_DIR (keeps the last 8)
+#        llm clean [--yes]     list the Docker images, containers, volumes and build cache the
+#                              stack doesn't use, with their sizes; --yes deletes them
 #
 # Install: ln -s "$PWD/client/llm" ~/.local/bin/llm   (any directory on PATH)
 # Settings come from the repository's .env; see .env.example and client/README.md.
@@ -390,6 +392,8 @@ cmd_status() {
     echo "containers: ${ps_out:-none}"
   fi
 
+  if docker_up; then echo "docker:     $(docker_usage)"; fi
+
   local models
   if ! gateway_alive; then
     echo "gateway:    no answer"
@@ -440,12 +444,129 @@ cmd_backup() {
   if ((n)); then echo "removed $n old backup(s); keeping the last $BACKUPS_KEPT"; fi
 }
 
+# ---------------------------------------------------------------- disk use
+
+# Docker prints decimal sizes like 40.47kB, 910MB, 1.06GB; these turn them into bytes and back.
+to_bytes() {
+  awk '{ n = $0 + 0; u = $0; sub(/^[0-9.]+/, "", u)
+    m = (u == "kB") ? 1e3 : (u == "MB") ? 1e6 : (u == "GB") ? 1e9 : (u == "TB") ? 1e12 : 1
+    printf "%.0f\n", n * m }'
+}
+human() { awk -v b="$1" 'BEGIN { if (b >= 1e9) printf "%.1f GB", b / 1e9
+  else if (b >= 1e6) printf "%.0f MB", b / 1e6; else printf "%.0f kB", b / 1e3 }'; }
+
+# Docker Desktop keeps everything in one sparse file; what counts on the Mac is the space it
+# actually occupies, not its apparent size.
+DOCKER_RAW=$HOME/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw
+disk_image_bytes() { [[ -f $DOCKER_RAW ]] && echo $(($(du -k "$DOCKER_RAW" | cut -f1) * 1024)); }
+
+docker_usage() {
+  local images volumes cache total raw
+  images=$(docker system df --format '{{.Type}}|{{.Size}}' | sed -n 's/^Images|//p' | to_bytes)
+  volumes=$(docker system df --format '{{.Type}}|{{.Size}}' | sed -n 's/^Local Volumes|//p' | to_bytes)
+  cache=$(docker system df --format '{{.Type}}|{{.Size}}' | sed -n 's/^Build Cache|//p' | to_bytes)
+  total=$((images + volumes + cache))
+  printf '%s (images %s, volumes %s, build cache %s)' "$(human $total)" "$(human "$images")" \
+    "$(human "$volumes")" "$(human "$cache")"
+  if raw=$(disk_image_bytes); then printf '; disk image on the Mac %s' "$(human "$raw")"; fi
+  echo
+}
+
+# Images the stack needs: what compose.yaml runs, the bases of the images it builds (so they
+# rebuild offline), the backup image, and anything listed in LLM_CLEAN_KEEP.
+keep_images() {
+  compose config --images
+  sed -n 's/^FROM \([^ ]*\).*/\1/p' "$REPO"/client/tools/*/Dockerfile
+  echo "$BACKUP_IMAGE"
+  local i
+  for i in ${LLM_CLEAN_KEEP:-}; do echo "$i"; done
+}
+
+cmd_clean() {
+  local yes=0
+  case ${1:-} in
+    --yes) yes=1 ;;
+    "") ;;
+    *) die "usage: llm clean [--yes]" ;;
+  esac
+  ensure_docker
+
+  local keep containers used plan="" total=0 id name size b v
+  keep=$(keep_images | sort -u)
+  # Stopped containers that aren't the stack's: test runs and other leftovers.
+  containers=$(docker ps -a --filter status=exited --filter status=created --filter status=dead \
+    --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v p="$PROJECT" '$3 != p')
+  # Images still used by a container that stays.
+  used=$(docker ps -aq | grep -vFx -f <(cut -d'|' -f1 <<<"$containers" | grep .) |
+    xargs -r docker inspect -f '{{.Image}}' | sort -u || true)
+
+  while IFS='|' read -r id name _; do
+    [[ -n $id ]] && plan+="container|$id|0|$name"$'\n'
+  done <<<"$containers"
+  while IFS='|' read -r id name size; do
+    [[ -n $id ]] || continue
+    grep -qFx "$id" <<<"$used" && continue
+    grep -qFx "$name" <<<"$keep" && continue
+    b=$(to_bytes <<<"$size")
+    if [[ $name == "<none>:<none>" ]]; then
+      plan+="image|$id|$b|untagged $(cut -c8-19 <<<"$id")"$'\n'
+    else
+      plan+="image|$name|$b|$name"$'\n'
+    fi
+  done < <(docker system df -v --format '{{range .Images}}{{.ID}}|{{.Repository}}:{{.Tag}}|{{.UniqueSize}}{{println}}{{end}}')
+  # Unused volumes, except the stack's own (by compose label or name), even when it is down.
+  while IFS='|' read -r name size; do
+    [[ -n $name ]] || continue
+    docker volume ls -q --filter dangling=true | grep -qFx "$name" || continue
+    [[ $name == "${PROJECT}_"* ]] && continue
+    v=$(docker volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$name")
+    [[ $v == "$PROJECT" ]] && continue
+    plan+="volume|$name|$(to_bytes <<<"$size")|$name"$'\n'
+  done < <(docker system df -v --format '{{range .Volumes}}{{.Name}}|{{.Size}}{{println}}{{end}}')
+  b=$(docker system df --format '{{.Type}}|{{.Size}}' | sed -n 's/^Build Cache|//p' | to_bytes)
+  ((b > 0)) && plan+="cache|all|$b|build cache"$'\n'
+
+  if [[ -z $plan ]]; then
+    echo "nothing to clean"
+    return
+  fi
+  ((yes)) && echo "removing:" || echo "would remove (run llm clean --yes to do it):"
+  while IFS='|' read -r kind _ b name; do
+    [[ -n $kind ]] || continue
+    total=$((total + b))
+    printf '  %-9s %9s  %s\n' "$kind" "$(human "$b")" "$name"
+  done <<<"$plan"
+  # Images that share layers free more together than the sum of their own layers.
+  if ! ((yes)); then
+    echo "frees at least $(human $total) inside Docker"
+    return
+  fi
+
+  local raw0 raw1
+  raw0=$(disk_image_bytes || true)
+  while IFS='|' read -r kind id _; do
+    case $kind in
+      container) docker rm "$id" >/dev/null ;;
+      image) docker image rm "$id" >/dev/null ;;
+      volume) docker volume rm "$id" >/dev/null ;;
+      cache) docker builder prune -af >/dev/null ;;
+    esac || echo "  could not remove $kind $id" >&2
+  done <<<"$plan"
+  echo "freed at least $(human $total) inside Docker"
+  if [[ -n $raw0 ]]; then
+    # Docker Desktop hands freed blocks back to macOS (TRIM) after a short delay.
+    sleep 10
+    raw1=$(disk_image_bytes)
+    echo "disk image on the Mac: $(human "$raw0") -> $(human "$raw1")"
+  fi
+}
+
 case ${1:-} in
-  up | down | status | backup)
+  up | down | status | backup | clean)
     cmd=$1
     shift
     "cmd_$cmd" "$@"
     ;;
-  -h | --help | help | "") sed -n '2,13p' "$src" | sed 's/^# \{0,1\}//' ;;
+  -h | --help | help | "") sed -n '2,15p' "$src" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (try: llm help)" ;;
 esac

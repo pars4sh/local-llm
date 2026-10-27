@@ -6,7 +6,7 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 
 | File | Purpose |
 |---|---|
-| `llm` | One command for everything: `llm up`, `llm down [--keep-ui]`, `llm status`, `llm backup` |
+| `llm` | One command for everything: `llm up`, `llm down [--keep-ui]`, `llm status`, `llm backup`, `llm clean [--yes]` |
 | `tunnel.sh` | Finds the node and gateway port from the newest run file of a running job, forwards `127.0.0.1:$GATEWAY_LOCAL_PORT` to it through the login host, and follows the job when it moves |
 | `compose.sh` | Runs `docker compose` with the repository's `.env` and the client models from the roster (`cluster/roster.py client-env`) |
 | `compose.yaml` | Open WebUI, SearXNG, Docling (docling-serve), Open Terminal and the MCP tool servers: pinned tags, only Open WebUI published (on `127.0.0.1`), named volumes |
@@ -39,8 +39,9 @@ Python 3.11 or newer must be on `PATH` (`compose.sh` reads the roster). `llm` ru
 |---|---|
 | `llm up [--no-open]` | Reuses my running or pending serving job (job name from `cluster/serve.sbatch`), or submits one through `cluster/submit.sh` on the cluster. Shows pending, starting, ready; waits up to `LLM_QUEUE_TIMEOUT` (1800 s) in the queue and `LLM_START_TIMEOUT` (900 s) for startup, and on failure prints the job ID and the tail of its log. Then starts the tunnel and the containers (both skipped if already up), checks `/v1/models` through the tunnel, prints `Ready: http://localhost:3000` and opens the browser. |
 | `llm down [--keep-ui]` | Cancels my serving jobs (only those with the project's job name), stops the tunnel and stops the containers. Volumes are never removed. `--keep-ui` leaves Open WebUI running, to read old chats. |
-| `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, and whether the gateway answers with the client key |
+| `llm status` | Job (pending, running or none; node, time left, idle limit), tunnel, containers, Docker's disk use (and what its disk image takes on the Mac), and whether the gateway answers with the client key |
 | `llm backup` | Backs up the Open WebUI volume to `BACKUP_DIR`, keeping the last 8 |
+| `llm clean [--yes]` | Lists what Docker holds that the stack doesn't use, with sizes: stopped containers of other projects, unused images, dangling volumes, the build cache. Deletes only with `--yes`. Never touches the stack's volumes or the images it needs (compose images, their build bases, the backup image, `LLM_CLEAN_KEEP`). D-020 |
 
 The tunnel runs in the background; its log is `~/.local/state/local-llm/tunnel.log`.
 `client/tunnel.sh` and `client/compose.sh` still work on their own.

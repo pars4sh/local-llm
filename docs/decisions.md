@@ -625,3 +625,37 @@ that relevance search missed entirely.
 **Rejected.** Retrying keyless when the key is refused: it worked in one burst, but the
 keyless pool is shared with everyone, and the key is what Semantic Scholar issued us to use.
 A Recommendations tool: not needed so far.
+
+## D-020: Docker disk use: `llm clean`, and no slim images
+**Status:** accepted · 2026-10-27
+
+**Decision.** `llm clean` lists what Docker holds that the stack doesn't use, with sizes, and
+deletes it only with `--yes`: stopped containers of other projects, images that no remaining
+container uses and that aren't needed, dangling volumes, and the build cache. Needed means: the
+images `compose config --images` names, the bases of the images the stack builds (so they
+rebuild offline), the backup image, and anything in `LLM_CLEAN_KEEP`. The stack's volumes are
+never candidates, by compose label and by name, even while the stack is down. `llm status`
+gains a `docker:` line with images, volumes, build cache, and the space Docker Desktop's disk
+image actually takes on the Mac.
+
+**Measured** (2026-10-27, Docker Desktop 29.9.2 on macOS): `llm clean --yes` removed the test
+leftovers (an untagged bench image 1.1 GB, a rejected arXiv candidate 149 MB, `s2-mcp:1`, two
+slim images pulled for the comparison below) and 2.4 GB of build cache: "at least 5.0 GB"
+inside Docker. `Docker.raw` (sparse, 460 GB apparent) went from 29.6 to 25.1 GB on disk and the
+Mac's free space from 17.1 to 21.6 GB, so Docker Desktop hands freed space back to macOS without
+a manual compaction.
+
+**The biggest images, and whether a smaller variant would do** (size unpacked; arm64 download):
+- `docling-serve-cpu` 7.2 GB (2.1 GB): already the smallest official variant; `docling-serve`
+  downloads 5.3 GB. About 0.85 GB is models (two layout models, two OCR engines), 0.65 GB torch.
+- `open-terminal` 5.9 GB (1.4 GB): `0.14.2-slim` is 0.66 GB (0.14 GB) but has no pip, numpy,
+  pandas, matplotlib, scipy, node or compilers, which the Code preset uses.
+- `open-webui` 5.8 GB (1.5 GB): `v0.12.3-slim` is 0.92 GB (0.20 GB) but lacks `chromadb`, the
+  vector store that holds the knowledge bases, besides the local embedding/Whisper stack we
+  don't use.
+- `playwright/mcp` 1.5 GB: one variant only.
+- `hf-mcp` 0.9 GB: built from the upstream Dockerfile.
+
+**Rejected.** `docker system prune -a`: it would also delete the backup image and the build
+bases, and anything of other projects. Cleaning automatically in `llm down`: deletes should be
+seen first. Slim images: see above.
