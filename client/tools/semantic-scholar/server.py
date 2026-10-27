@@ -4,13 +4,18 @@ Written here because no published server met the API's terms for keyed use: ever
 carries the key and goes through one limiter below 1 request/s, 429s back off, and paper
 details use the batch endpoint with only the fields that are needed.
 
+- Searches use bulk search, which the API guide recommends for most uses because relevance
+  search costs the API more. Relevance search is kept for finding a specific paper or the
+  few best matches. Searches request only flat fields (no authors); get_papers adds them.
+
 - One process, one asyncio limiter: all tool calls, parallel or not, and the weekly digest
   share it. Requests start at least S2_MIN_INTERVAL seconds apart (default 1.1).
 - 429 and 5xx: retry with exponential backoff (honouring Retry-After), each retry through the
   limiter again, for at most S2_RETRY_BUDGET seconds (default 60) per tool call. Then the call
   fails with "Semantic Scholar unavailable, try OpenAlex", so the model moves on.
 - The key comes from S2_API_KEY and is sent as x-api-key. It is never logged: httpx's request
-  logging is off and errors report only the status and the path.
+  logging is off and errors report only the status and the path. Each 429 is logged with its
+  endpoint, body and headers, and whether the request carried the key.
 
 Data: Semantic Scholar Academic Graph API (https://www.semanticscholar.org/product/api).
 """
@@ -19,6 +24,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import time
 
 import httpx
@@ -30,10 +36,8 @@ API = "https://api.semanticscholar.org/graph/v1"
 MIN_INTERVAL = float(os.environ.get("S2_MIN_INTERVAL", "1.1"))
 RETRY_BUDGET = float(os.environ.get("S2_RETRY_BUDGET", "60"))
 UNAVAILABLE = "Semantic Scholar unavailable, try OpenAlex"
-LIST_FIELDS = "title,year,venue,authors,externalIds,citationCount"
-DETAIL_FIELDS = (
-    LIST_FIELDS + ",abstract,tldr,publicationDate,referenceCount,openAccessPdf"
-)
+SEARCH_FIELDS = "title,year,publicationDate,venue,externalIds,citationCount"
+DETAIL_FIELDS = SEARCH_FIELDS + ",authors,abstract,tldr,referenceCount,openAccessPdf"
 EDGE_FIELDS = "title,year,venue,externalIds,citationCount"
 
 logging.basicConfig(
@@ -96,6 +100,8 @@ async def request(method: str, path: str, **kwargs) -> dict:
             retry_after = resp.headers.get("retry-after")
             if status == 404:
                 raise ValueError(f"not found: {path}")
+            if status == 429:
+                log_429(method, path, resp)
             if status not in (429, 500, 502, 503, 504):
                 raise RuntimeError(
                     f"Semantic Scholar answered {status} {reason} for {path}"
@@ -121,6 +127,25 @@ async def request(method: str, path: str, **kwargs) -> dict:
             backoff,
         )
         await asyncio.sleep(backoff)
+
+
+def log_429(method: str, path: str, resp: httpx.Response) -> None:
+    key = os.environ.get("S2_API_KEY", "").strip()
+    headers = {
+        k: v
+        for k, v in resp.headers.items()
+        if k.lower() in ("retry-after", "x-amzn-errortype", "x-amzn-requestid")
+    }
+    text = f"{resp.text[:200]!r} {headers}"
+    if key:
+        text = text.replace(key, "<key>")
+    log.warning(
+        "429 on %s %s, key sent: %s, body and headers: %s",
+        method,
+        path,
+        "x-api-key" in resp.request.headers,
+        text,
+    )
 
 
 def ident(p: dict) -> str:
@@ -170,29 +195,50 @@ mcp = FastMCP(
 @mcp.tool()
 async def search_papers(
     query: str,
+    sort: str = "citations",
     limit: int = 10,
-    year: str = "",
+    dates: str = "",
     venue: str = "",
     fields_of_study: str = "",
 ) -> str:
-    """Search papers by relevance.
+    """Search papers. Returns titles, venues, citation counts and ids; use get_papers for
+    authors and abstracts.
 
-    :param query: plain-text search words
+    :param query: key terms, all of which must appear in the title or abstract, so use a few
+        (e.g. "egocentric action anticipation"). Use | for alternatives ("micro-CT | microCT"),
+        quotes for a phrase, and -term to exclude.
+    :param sort: "citations" (most cited first), "newest" (latest first), or "relevance" (best
+        text match; only to find one specific paper or the few closest matches, max 20)
     :param limit: number of results, 1 to 50
-    :param year: optional year or range, e.g. "2024", "2022-2025", "2023-"
+    :param dates: optional publication date or year range, "start:end" with either end open,
+        e.g. "2026-10-20:", "2022:2025", "2024"
     :param venue: optional comma-separated venues, e.g. "CVPR,ICCV,ECCV"
     :param fields_of_study: optional, e.g. "Computer Science" or "Medicine"
     """
-    params = {"query": query, "limit": max(1, min(limit, 50)), "fields": LIST_FIELDS}
-    if year:
-        params["year"] = year
+    if sort not in ("citations", "newest", "relevance"):
+        raise ValueError('sort must be "citations", "newest" or "relevance"')
+    params = {"query": query, "fields": SEARCH_FIELDS}
+    if dates:
+        params["publicationDateOrYear"] = dates
     if venue:
         params["venue"] = venue
     if fields_of_study:
         params["fieldsOfStudy"] = fields_of_study
-    data = await request("GET", "/paper/search", params=params)
-    papers = data.get("data") or []
-    head = f"{data.get('total', 0)} results for {query!r}; showing {len(papers)}:"
+    limit = max(1, min(limit, 50))
+    if sort == "relevance":
+        limit = min(limit, 20)
+        data = await request("GET", "/paper/search", params={**params, "limit": limit})
+    else:
+        # Bulk search has no limit: it returns up to 1000 per call; we show the first few.
+        # A hyphen inside a word ("micro-CT") would read as "exclude", so split such words.
+        if not any(c in query for c in '+|"*()~'):
+            params["query"] = re.sub(r"(?<=\w)-(?=\w)", " ", query)
+        params["sort"] = (
+            "citationCount:desc" if sort == "citations" else "publicationDate:desc"
+        )
+        data = await request("GET", "/paper/search/bulk", params=params)
+    papers = (data.get("data") or [])[:limit]
+    head = f"{data.get('total', 0)} results for {query!r} by {sort}; showing {len(papers)}:"
     return (
         "\n".join([head, *map(line, papers)])
         if papers

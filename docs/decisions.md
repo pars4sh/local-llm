@@ -487,8 +487,8 @@ paper-search-mcp have no batch endpoint; JackKuo666's has no key support, limite
 BioMCP limits per process while the arXiv server would hold the key too. Ours:
 - one process and one asyncio limiter: request starts at least 1.1 s apart, whatever calls
   them in parallel (measured: six parallel calls started 1.10 s apart);
-- 429 and 5xx: exponential backoff honouring Retry-After, up to 5 retries, each through the
-  limiter again;
+- 429 and 5xx: exponential backoff honouring Retry-After, each through the limiter again
+  (since D-019 for at most 60 s per call);
 - `POST /paper/batch` for details; each tool asks only for the fields it prints;
 - `x-api-key` on every request; httpx's request logging is off and its own log lines carry
   only method and path.
@@ -496,8 +496,8 @@ BioMCP limits per process while the arXiv server would hold the key too. Ours:
 The key is no longer given to the arXiv server (its `citation_graph` isn't exposed), so this is
 the only S2 client. OpenAlex stays as the fallback the Research prompt names. Measured on
 2026-10-27 with the new key: it is accepted (a wrong key gets 403), but about one request in
-four still got 429 even at one request per 5 s, with the anonymous-pool message; the retries
-absorb it at a few seconds' cost. To check with Semantic Scholar if it persists.
+four still got 429 even at one request per 5 s; the retries absorb it at a few seconds' cost.
+(The 429 body says "apply for a key", but keyed requests get the same body; see D-019.)
 
 ## D-017: Presets as code, applied by a script, enforced by a filter
 **Status:** accepted · 2026-10-27
@@ -577,3 +577,51 @@ missing y label.
 - Offline mode doesn't touch web search, `fetch_url` or the MCP tool servers.
 - Consequence: Python tools or functions that declare pip requirements won't install them. The
   preset guard (D-017) needs none.
+
+## D-019: Semantic Scholar: bulk search, fail fast, and what the 429s are
+**Status:** accepted · 2026-10-27
+
+**Decision.**
+- `search_papers` uses bulk search (`/paper/search/bulk`), sorted by citation count (default)
+  or by publication date, with a `dates` filter (`publicationDateOrYear`). Relevance search
+  (`/paper/search`) is only `sort="relevance"`, capped at 20, for finding one specific paper
+  or the few closest matches.
+- Searches request only flat fields (title, year, date, venue, ids, citation count); authors,
+  abstracts and TL;DRs come from `get_papers` (`POST /paper/batch`).
+- Retries stop after `S2_RETRY_BUDGET` (60 s) per tool call, and the call fails with
+  "Semantic Scholar unavailable, try OpenAlex". The Research prompt then sends the same search,
+  citation counts and citation graph to OpenAlex. Measured against a mock that always answers
+  429: 7 attempts, gives up at 58.9 s.
+- Every 429 is logged with endpoint, body, the `retry-after` and request-id headers, and
+  whether the request carried `x-api-key`; never the key.
+
+**Why.** The API tutorial: "Paper bulk search should be used in most cases because paper
+relevance search is more resource intensive", and "Avoid including more fields than you need".
+
+**What the 429s are** (measured 2026-10-27, from the S2 container, key never printed):
+- Every 429 had `key sent: True`. All requests go through one `httpx` client with the key in
+  its default headers, the base URL is `https://api.semanticscholar.org/graph/v1`, and no
+  other container holds the key. The digest doesn't call Semantic Scholar (it uses PubMed and
+  arXiv), and there is no Recommendations tool.
+- The body "Too Many Requests. Please wait and try again or apply for a key" is what keyed
+  requests get too, so it doesn't mean the key was dropped: in one test six keyless requests
+  back to back all succeeded, while the first keyed request after 5 s idle got that 429.
+  A wrong key gets 403.
+- The share refused doesn't depend on our rate: 2/8 at one request per 1.1 s, 5/8 per 3 s,
+  3/8 per 10 s.
+- Nor on the endpoint. The six test queries, interleaved over three rounds: relevance search
+  34 requests, 16 × 429 (47%); bulk search 35 requests, 17 × 429 (49%).
+
+So Semantic Scholar refuses roughly 40–50% of this key's requests at any rate. The retries
+absorb it (no call hit the 60 s budget in these runs). Only Semantic Scholar can say why; ask
+them, with a few of the logged request ids.
+
+**Trade-off.** Bulk search has no relevance ranking and requires every query term, so a long
+natural-language query finds few papers, some off-topic when sorted by citations (e.g. "3D
+spatial understanding from egocentric video"). The tool description asks for a few key terms
+and offers `|`, quotes and `-term`. It also found the micro-CT–histology registration paper
+that relevance search missed entirely.
+
+**Rejected.** Retrying keyless when the key is refused: it worked in one burst, but the
+keyless pool is shared with everyone, and the key is what Semantic Scholar issued us to use.
+A Recommendations tool: not needed so far.

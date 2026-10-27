@@ -124,11 +124,13 @@ server's reading tools. The comparison behind the choices is D-016.
 | `huggingface` | huggingface/hf-mcp-server (built from the release commit) | `hub_repo_search`, `hub_repo_details`, `hf_fs` (papers, docs, files) | `HF_TOKEN` (read-only) |
 
 `LITERATURE_CONTACT_EMAIL` is sent to NCBI, Europe PMC and OpenAlex, which ask clients for a
-contact. Without keys everything works at the anonymous rate limits; Semantic Scholar's anonymous
-pool is refused most of the time. The Semantic Scholar server is the only client of the S2 key:
+contact. Without keys everything works at the anonymous rate limits; Semantic Scholar's keyless
+pool is shared with everyone. The Semantic Scholar server is the only client of the S2 key:
 one process, one limiter (a request every `S2_MIN_INTERVAL` = 1.1 s, below the key's 1/s across
-all endpoints) for every tool call and the digest, backoff and retry on 429, the batch endpoint
-for details, and only the fields it shows. It never logs the key.
+all endpoints) for every tool call and the digest, backoff and retry on 429 for at most
+`S2_RETRY_BUDGET` = 60 s per call (then "Semantic Scholar unavailable, try OpenAlex"), bulk
+search for searches, the batch endpoint for details, and only the fields it shows. It never
+logs the key; each 429 is logged with endpoint, body and headers (D-019).
 
 Built-in web search (SearXNG) and `fetch_url` stay as they were; the page reader is for pages
 that need JavaScript.
