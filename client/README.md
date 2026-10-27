@@ -13,6 +13,7 @@ The laptop side: the Docker Compose stack and the SSH tunnel to the gateway.
 | `searxng/settings.yml` | SearXNG config: JSON output for Open WebUI, rate limiting off for local use |
 | `tools/` | Images built here: the arXiv MCP server (no published image) and our Semantic Scholar MCP server; pinned base and pip lock files |
 | `presets/` | Presets, system prompts, slash prompts, knowledge bases and the digest automation (`presets.toml`), the preset-guard filter, and `apply.py`, which makes Open WebUI match them |
+| `launchd/digest-wakeup.sh` | Optional: run `llm up --no-open` before the weekly digest (macOS) |
 
 ## Setup
 
@@ -178,6 +179,40 @@ stray glyphs (some fonts map digits privately), `apply.py` re-extracts it with D
 Mondays at 10:00 (the Open WebUI user's time zone) and files the chat into the "Digest" folder.
 It needs the GPU job up and the Mac awake. To test it once: `client/presets/apply.py --run
 "Weekly literature digest"`.
+
+**Optional wake-up.** `client/launchd/digest-wakeup.sh install` adds a launchd job that runs
+`llm up --no-open` on Mondays at 09:40 (`install WEEKDAY HH:MM` to change it). It runs only while
+the Mac is awake; `sudo pmset repeat wakeorpoweron M 09:35:00` wakes it. `uninstall` removes it.
+macOS doesn't let launchd jobs read `~/Desktop`, so install it only after moving the checkout
+(see Moving the checkout).
+
+## Moving the checkout
+
+macOS doesn't let launchd jobs read `~/Desktop`, `~/Documents` or `~/Downloads`, so the
+optional wake-up job only works with the repository elsewhere, for example `~/code/local-llm`.
+
+Moving keeps chats, knowledge bases and settings. The Compose project name is fixed by `name:
+local-llm` in `compose.yaml`, not taken from the directory, so the volumes
+(`local-llm_open-webui`, `local-llm_searxng-cache`) and the locally built images keep their
+names. Nothing may set `COMPOSE_PROJECT_NAME` or pass `-p`. `.env` moves with the checkout;
+paths in it (`OPEN_TERMINAL_DIR`, `KNOWLEDGE_DIR`, `BACKUP_DIR`) stay valid if they point
+outside it. The tunnel's state lives in `~/.local/state/local-llm/` and doesn't depend on the
+path. The cluster checkout isn't affected.
+
+```
+llm backup                                   # optional safety copy
+llm down
+mkdir -p ~/code
+mv ~/Desktop/local-llm ~/code/local-llm
+ln -sf ~/code/local-llm/client/llm ~/.local/bin/llm
+~/code/local-llm/client/launchd/digest-wakeup.sh install
+llm up
+```
+
+Then check: `llm status` shows the job, tunnel and containers; `docker volume ls` still lists
+`local-llm_open-webui`; old chats are in Open WebUI; and
+`~/code/local-llm/client/launchd/digest-wakeup.sh status` says installed. The installer writes
+the new path into the launchd job, which is why it is run again after the move.
 
 ## Manual Open WebUI settings
 
