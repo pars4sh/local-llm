@@ -1,5 +1,9 @@
 # local-llm
 
+**Using the assistant?** Start with the plain-language guide, [docs/guide.md](docs/guide.md):
+starting and stopping it, which assistant to pick, everyday tasks, and what to do when something
+goes wrong.
+
 A self-hosted AI assistant for an HPC cluster. Open-weight models are served by vLLM on a SLURM
 GPU node, and you use them through Open WebUI on your laptop. The assistant can:
 - search the web and do research with sources

@@ -58,6 +58,8 @@ Check which machine you're on before running anything:
   - `ruff check` and `ruff format`
 - **Config:** read environment variables from `.env`, with sensible defaults. No hard-coded paths, ports or model names.
 - **Docs move with the code:**
+  - when a change affects how the user starts, uses or fixes the system, update `docs/guide.md`
+    in the same commit, in the same plain style
   - tick `docs/roadmap.md` when a step is done
   - when you make or reverse a choice, add an entry to `docs/decisions.md` saying what changed, why, and what was rejected
   - record the exact versions and flags that actually worked on the GPU
